@@ -1,6 +1,6 @@
 ## Context
 
-Changes 1–3 established the data and control surfaces: lifecycle state (`add-cgc-session-lifecycle-gate`), guidance (`add-cgc-agent-routing-guidance`), and human commands (`add-cgc-slash-commands`). What remains invisible is ongoing health: a user cannot tell ready from stale from busy without typing `/cgc status`. Reference extensions (CKG's HUD, EstebanForge's footer status) demonstrate that a quiet, always-visible chip plus one-time warnings converts invisible background work into trust — and that such displays must be strictly passive and headless-safe to avoid harming the sessions they inform.
+Changes 1–3 established the data and control surfaces: lifecycle state (`add-cgc-session-lifecycle-gate`), guidance (`add-cgc-agent-routing-guidance`), and human commands (`add-cgc-slash-commands`). What remains invisible is ongoing health: a user cannot tell ready from stale from busy without typing `/cgc status`. Reference extensions (CKG's HUD) demonstrate that a quiet, always-visible chip plus one-time warnings converts invisible background work into trust — and that such displays must be strictly passive and headless-safe to avoid harming the sessions they inform.
 
 In-force ADRs: `adr/0001` (wrap-only, fail-open), `adr/0002` (guidance contract), `adr/0003` (consent model). This display registers no tools, injects no agent content, and triggers no actions — it renders state that already exists.
 
@@ -96,5 +96,5 @@ graph TB
 
 ## Open Questions
 
-- Resolved during validation: the TUI surfaces are pinned as `ctx.ui.setStatus(key, text)` (persistent footer status) / `ctx.ui.setFooter(renderFn)` for the chip and `ctx.ui.notify(message, severity)` for one-time notices; the headless/TUI guard is `ctx.mode === "tui"` because `ctx.hasUI` is also true in RPC mode (validator verdicts PT1–PT3).
+- Resolved during validation: the TUI surfaces are pinned as `ctx.ui.setStatus(key, text)` (persistent footer status) / `ctx.ui.setFooter(renderFn)` for the chip and `ctx.ui.notify(message, severity)` for one-time notices; the headless/TUI guard is `ctx.mode === "tui"` because `ctx.hasUI` is also true in RPC mode (validator verdicts in validate.md §1.2 and §1.4–1.5).
 - None blocking otherwise.

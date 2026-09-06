@@ -31,7 +31,7 @@ Rule: When `worktree.mode` is `isolate`, the extension SHALL map each linked wor
 
 - **GIVEN** `worktree.mode` is `isolate` and the user declines context creation
 - **WHEN** the session continues
-- **THEN** no context is created and no extension indexing runs for that worktree; the state says unindexed-pending-consent
+- **THEN** no context is created and no extension indexing runs for that worktree; the workspace is reported unindexed with guidance on enabling creation
 
 #### Scenario: Subsequent session reuses the mapping
 

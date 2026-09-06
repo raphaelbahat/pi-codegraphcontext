@@ -31,7 +31,7 @@ None.
 - CGC "logs a warning at index time when potential secrets are detected, listing the affected nodes and properties" — corroborating that source trees commonly carry hardcoded secrets, which CLI output (doctor/report rendering file-adjacent content) can echo.
   - Evidence: <https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/docs/docs/guides/bundles.md> (section "Secrets in Bundles", line ~371)
 
-### 3.4
+### 2.5
 
 - `openspec validate <item> --type <type> --strict` matches the installed OpenSpec CLI usage exactly.
   - Evidence: `openspec validate --help` (verified 2026-09-06; same CLI verified for change 1)

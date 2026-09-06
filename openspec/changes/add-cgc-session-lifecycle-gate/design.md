@@ -4,7 +4,7 @@ CodeGraphContext (CGC) ships an MCP server (25 query tools), a CLI (`cgc`), and 
 
 Prior art studied in the reference-extension recon: independent Pi extensions converged on the same four lifecycle bugs — `process.cwd()` instead of session cwd, zombie subprocesses, eager startup, and prompt injection before tools are ready. This design builds the fixes in from day one.
 
-Existing ADRs: `<repo>/adr/` does not exist yet; there are no in-force ADRs constraining this design. This design produces the first ones.
+Existing ADRs: No ADRs existed when this design was written (adr/0001 is created by this change); no Accepted/in-force ADRs constrain it. Sibling-campaign ADRs adr/0002–0009 — all Status: Proposed, not in force — cover components delegated to later changes in this campaign (freshness sync, slash commands, status HUD, worktree contexts).
 
 ## Goals / Non-Goals
 

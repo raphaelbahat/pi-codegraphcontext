@@ -1,7 +1,7 @@
 ## 1. Detection and mapping
 
 - [ ] 1.1 Implement config key `worktree.mode` (`off` default | `isolate`) with an environment-variable override.
-- [ ] 1.2 Implement spawn-free worktree detection: read the `.git` pointer file, parse the `gitdir:` reference into repository common dir + worktree id, cache once per session; report main checkouts and non-git directories as non-worktrees; degrade fail-open on malformed pointers.
+- [ ] 1.2 Implement spawn-free worktree detection: read the `.git` pointer file, parse the `gitdir:` reference into repository common dir + worktree id, cache once per session; report main checkouts and non-git directories as non-worktrees; degrade fail-open on malformed pointers, capping retries at one per session.
 - [ ] 1.3 Implement the worktree map: `{context name, repository common dir, worktree id}` records persisted per workspace, with identity verification at resolution.
 
 ## 2. Isolation behavior
@@ -14,6 +14,6 @@
 ## 3. Verification and closure
 
 - [ ] 3.1 Test detection across main checkout / linked worktree / malformed pointer; test mapping lifecycle (create-on-consent, reuse, mismatch refusal, pruned notice).
-- [ ] 3.2 Test default-off behavior (no mapping, no flag injection) and fail-open containment.
+- [ ] 3.2 Test default-off behavior (no mapping, no flag injection) and fail-open containment, including the one-retry-per-session cap.
 - [ ] 3.3 Verify all scenarios in `specs/cgc-worktree-contexts/spec.md` against the implementation.
 - [ ] 3.4 Run `openspec validate add-cgc-worktree-aware-contexts --type change --strict` before archive.

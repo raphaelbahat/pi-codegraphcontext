@@ -5,7 +5,8 @@ CodeGraphContext's MCP server exposes the full graph query surface, but nothing 
 ## What Changes
 
 - New Pi extension foundation, package name `pi-codegraphcontext` (TypeScript, Pi extension APIs), which wraps the `cgc` binary only — it never modifies CodeGraphContext source, and the CGC MCP server remains the graph query engine (zero re-wrapped query tools).
-- Session-start lifecycle gate: on `session_start`, resolve the workspace from the session context (`ctx.cwd`, never `process.cwd`) and run a non-blocking state machine:
+- Session-start lifecycle gate: on `session_start`, resolve the workspace from the session context (`ctx.cwd`, never `process.cwd`) and run a non-blocking five-state state machine:
+  - `unavailable` → `cgc` binary missing: surface a one-time notice and let the session proceed (fail-open)
   - `unindexed` → offer/create an index (opt-in via config; never auto-create without consent)
   - `indexed + drift` → sync the graph to disk (incremental re-index of changed files)
   - `corrupt` → offer a full rebuild (explicit confirmation)

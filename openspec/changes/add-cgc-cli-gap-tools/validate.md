@@ -4,7 +4,7 @@
 - Validation date: 2026-09-06
 - Verdict: READY
 
-Validation method: one read-only validator (single technology group — all externally-observable claims are CodeGraphContext documentation claims; tool registration itself was already validated against installed Pi docs in the change-1/2 rounds) checked every claim against the project's live files on GitHub `main` (Context7 unavailable in this environment; documented fallback used).
+Validation method: one read-only validator (single technology group — all externally-observable claims are CodeGraphContext documentation claims; tool registration itself was already validated against installed Pi docs in the lifecycle-gate change — see openspec/changes/add-cgc-session-lifecycle-gate/validate.md) checked every claim against the project's live files on GitHub `main` (Context7 unavailable in this environment; documented fallback used).
 
 ---
 
@@ -42,10 +42,10 @@ None.
   - Evidence: <https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/docs/MCP_TOOLS.md>
   - Wording nit (documentation-level): the catalog names are snake_case (not "camelCase"); correct the gloss in extension docs when the guide is authored.
 
-### 3.4
+### 2.5
 
 - `openspec validate <item> --type <type> --strict` matches the installed OpenSpec CLI usage exactly.
-  - Evidence: `openspec validate --help` (verified 2026-09-06; same CLI verified for change 1)
+  - Evidence: `openspec validate --help` (verified 2026-09-06; same CLI verified in the lifecycle-gate change, openspec/changes/add-cgc-session-lifecycle-gate/validate.md)
 
 ---
 

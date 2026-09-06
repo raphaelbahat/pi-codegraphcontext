@@ -32,7 +32,7 @@ The benefit analysis and the user's scope decision restored this feature: the CG
 
 ### D2: Default-on with opt-out — decision recorded, flag kept open
 
-**Decision:** `tools.cliGap.enabled` defaults to true; disabling removes all three tools from the catalog.
+**Decision:** `tools.cliGap.enabled` defaults to true; disabling removes all three tools from the catalog; an explicit environment-variable override takes precedence over the config key.
 
 **Rationale:** These verbs have no MCP alternative, so default-off would hide the feature from everyone who didn't read docs — the opposite failure of the one the opt-out exists for. The user's lean supports default-on but was explicitly marked not-final; the open question below keeps this reversible before apply.
 
@@ -83,7 +83,7 @@ graph TB
         Consent["Consent Layer (ADR-0003)"]
         Errors["Structured Error Mapper"]
         Runner["cgc Runner + Output Policy (ADR-0005)"]
-        Cfg["Config: tools.cliGap.enabled (default true)"]
+        Cfg["Config: tools.cliGap.enabled (default true)\n+ env override"]
     end
 
     subgraph CGC["CodeGraphContext (unmodified)"]
@@ -102,7 +102,7 @@ graph TB
 
 ## Risks / Trade-offs
 
-- [CGC CLI verb flags drift across versions] -> Tools map to stable, documented verbs (`bundle export`, `context`, `doctor`); unsupported-flag failures surface as structured `COMMAND_FAILED` with the CLI's own hint; supported CGC version range pinned.
+- [CGC CLI verb flags drift across versions] -> Tools map to stable, documented verbs (`bundle export`, `context`, `doctor`); unsupported-flag failures surface as structured `COMMAND_FAILED` with the CLI's own hint; supported CGC version range to be pinned during implementation.
 - [A future MCP release duplicates these verbs] -> D5's deprecation path plus the CI collision test make retirement mechanical rather than debated.
 - [Agent requests export of sensitive repositories] -> Confirmation names the output path (ADR-0003); output itself passes redaction before returning; sandbox semantics remain CGC-enforced.
 - [Default-on surprises users who want a minimal tool surface] -> Single opt-out flag documented in the proposal and README; open question kept open for the user to flip the default before apply.

@@ -1,6 +1,6 @@
 ## Context
 
-Worktrees multiply one repository into several live checkouts on different branches. CGC's context model already contains the needed primitive — three resolution modes (global / per-repo / named) with named contexts addressable via `--context` on any CLI invocation and managed by documented `cgc context` verbs (creation optionally selects the database; deletion removes only the registration, preserving database files). What CGC lacks is worktree awareness: nothing keys a context to a worktree identity, nothing verifies that a context still belongs to the worktree using it, and nothing notices when a pruned worktree leaves an orphan. Reference practice (isac322's worktree-aware extension) established the correctness requirements: distinct graphs per worktree, identity-checked against the git common dir, fail-closed on mismatch, and cleanup after worktree removal.
+Worktrees multiply one repository into several live checkouts on different branches. CGC's context model already contains the needed primitive — three resolution modes (global / per-repo / named) with named contexts addressable via `--context` on any CLI invocation and managed by documented `cgc context` verbs (creation optionally selects the database; deletion removes only the registration, preserving database files). What CGC lacks is worktree awareness: nothing keys a context to a worktree identity, nothing verifies that a context still belongs to the worktree using it, and nothing notices when a pruned worktree leaves an orphan. Prior art in the ecosystem (worktree-aware tooling that isolates per-checkout state) established the correctness requirements: distinct graphs per worktree, identity-checked against the git common dir, fail-closed on mismatch, and cleanup after worktree removal.
 
 In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract), `adr/0003` (consent model — no autonomous deletions), `adr/0004`/`adr/0005` (renderers/output), `adr/0006` (the `/cgc_context` tool is the user-driven cleanup path), `adr/0007` (freshness posture). This change composes with the lifecycle gate: a worktree context is created under the same auto-create consent gate, and the gate's detection/classification then runs against that context.
 
@@ -18,7 +18,7 @@ In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract), `a
 - No control over the user's CGC MCP server context: the extension cannot (and must not) switch the MCP server's session; interplay is documented for the guide (the MCP server's own `switch_context` tool remains the user-driven path).
 - No autonomous cleanup: stale worktree contexts surface notices only; deletion stays behind the consent layer (ADR-0003) via `/cgc_context`.
 - No change to main checkouts, non-git directories, or default-mode behavior.
-- No sharing/symlinking of databases between worktrees (the reference extension's central-store-plus-symlink trick is unnecessary here — CGC named contexts already centralize storage under `~/.codegraphcontext/contexts/`).
+- No sharing/symlinking of databases between worktrees (the central-store-plus-symlink trick seen in prior work is unnecessary here — CGC named contexts already centralize storage under `~/.codegraphcontext/contexts/`).
 
 ## Decisions
 
@@ -48,7 +48,7 @@ In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract), `a
 
 **Decision:** Each mapping records `{context name, repository common dir, worktree id}`; at resolution, a mismatch (different repository, missing worktree pointer, or a context recreated against another workspace) produces an identity-mismatch state — no extension indexing, syncing, or tool invocation uses the mismatched context until the user re-consents.
 
-**Rationale:** The dangerous failure is silent wrong-graph answers across branches; failing closed converts that into a visible error. This is the reference extension's hardest-won insight.
+**Rationale:** The dangerous failure is silent wrong-graph answers across branches; failing closed converts that into a visible error. This is the hardest-won insight of that prior art.
 
 **Alternatives considered:**
 

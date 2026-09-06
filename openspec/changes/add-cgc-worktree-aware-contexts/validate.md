@@ -4,7 +4,7 @@
 - Validation date: 2026-09-06
 - Verdict: READY
 
-Validation method: one read-only validator (single technology group spanning git's worktree pointer-file mechanism and CGC's named-context verbs) checked every externally-observable claim in tasks.md against the official git documentation (git-scm.com) and the project's live files on GitHub `main` (Context7 unavailable in this environment; the same evidence sources were fetched directly).
+Validation method: one read-only validator (single technology group spanning git's worktree pointer-file mechanism and CGC's named-context verbs) checked every externally-observable claim in tasks.md against the official git documentation (git-scm.com) and the project's live files on GitHub `main` (Context7 was not used as an evidence source; the same evidence sources were fetched directly).
 
 Approved precision fix applied: the validator flagged that submodule checkouts also use a `.git` gitfile, so "gitfile ⇒ worktree" is not strictly exclusive. With user approval (established corrections policy), design.md D1 was updated to require verifying the gitdir target sits under the repository's `.git/worktrees/` prefix before treating it as worktree membership. No verdict changed.
 

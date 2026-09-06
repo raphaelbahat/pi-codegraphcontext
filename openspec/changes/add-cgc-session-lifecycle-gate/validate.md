@@ -23,7 +23,7 @@ None.
 
 ### 1.3
 
-- `child_process.spawn` runs the binary without a shell by default (`shell: false`), accepts `options.cwd`, and accepts `signal: AbortSignal` (abort ≈ kill); `AbortSignal.timeout(ms)` provides the time budget (v17.3.0+). `spawn` has no `maxBuffer` — bounded output capture is the caller's responsibility, matching the task's "bounded output capture" wording.
+- `child_process.spawn` runs the binary without a shell by default (`shell: false`), accepts `options.cwd`, and accepts `signal: AbortSignal` (abort ≈ kill); `AbortSignal.timeout(ms)` provides the time budget (v17.3.0+; backported to v16.14.0). `spawn` has no `maxBuffer` — bounded output capture is the caller's responsibility, matching the task's "bounded output capture" wording.
   - Evidence: <https://nodejs.org/api/child_process.html#child_processspawncommand-args-options> ; <https://nodejs.org/api/globals.html#static-method-abortsignaltimeoutdelay>
 
 ### 1.4

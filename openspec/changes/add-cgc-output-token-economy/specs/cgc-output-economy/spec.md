@@ -2,7 +2,6 @@
 
 ### Requirement: Bounded head+tail capture
 
-Feature: `cgc-output-economy`
 Rule: The shared runner SHALL cap captured output at the configured budget (`output.maxBytes`), preserving the beginning AND the end of the output, and SHALL mark truncation with an explicit marker that states the original output size.
 
 #### Scenario: Small output passes through unchanged

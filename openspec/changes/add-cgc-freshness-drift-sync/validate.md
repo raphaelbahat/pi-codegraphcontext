@@ -25,7 +25,7 @@ None.
 
 ### 2.4
 
-- `cgc watch [PATH]` is a continuous, foreground, watchdog-based watcher (create/modify/delete/move monitoring; automatic re-indexing of affected files and relationships) running as a long-lived process until `cgc unwatch` or termination — managed-child semantics in the design map directly onto the documented behavior. Watchdog 6.0.0 confirmed in the installed package (`core/watcher.py` imports `watchdog.observers.Observer`).
+- `cgc watch [PATH]` is a continuous, foreground, watchdog-based watcher (create/modify/delete/move monitoring; automatic re-indexing of affected files and relationships) running as a long-lived process until `cgc unwatch` or termination — managed-child semantics in the design map directly onto the documented behavior. Watchdog 6.0.0 confirmed in the installed package (`core/watcher.py` imports `watchdog.observers.Observer`). Note: upstream cli.md lists `cgc unwatch <PATH>` plainly, but the locally installed 0.6.10 CLI marks `cgc unwatch` as "[MCP only]" — informational only, since the design's managed-child termination (task 2.4) is the sole stop path regardless.
   - Evidence: <https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/docs/docs/reference/cli.md> (Real-Time Watchers); <https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/docs/docs/guides/indexing.md> (§4); installed `codegraphcontext/core/watcher.py:11–13`
 
 ### 2.1 / 2.2

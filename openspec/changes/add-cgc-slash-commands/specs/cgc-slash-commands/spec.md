@@ -2,7 +2,6 @@
 
 ### Requirement: Status command
 
-Feature: `cgc-slash-commands`
 Rule: The extension SHALL provide a `/cgc status` command that reports the active workspace, its lifecycle state, the last action taken, and — when the freshness capability is present — an index freshness summary, without performing any maintenance work.
 
 #### Scenario: Status on a clean workspace
@@ -29,8 +28,9 @@ Rule: `/cgc index` MUST honor the same consent gates as the session-start lifecy
 
 #### Scenario: Creating a missing index
 
-- **GIVEN** the active workspace has no CGC index and the user runs `/cgc index`
-- **THEN** the extension asks for confirmation to create the index, and on confirmation starts indexing in the background with visible progress state
+- **GIVEN** the active workspace has no CGC index
+- **WHEN** the user runs `/cgc index` on the unindexed workspace
+- **THEN** the extension applies the auto-create consent gate from the add-cgc-session-lifecycle-gate change — asking for confirmation to create the index — and on confirmation starts indexing in the background with visible progress state
 
 #### Scenario: Force rebuild requires confirmation
 

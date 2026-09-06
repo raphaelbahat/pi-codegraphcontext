@@ -6,7 +6,7 @@
 
 ## 2. Readiness gating and delivery
 
-- [ ] 2.1 Implement the readiness predicate over the lifecycle state from `add-cgc-session-lifecycle-gate` (ready for clean/drift/syncing/indexing; suppressed for unavailable/unindexed/busy/corrupt), degrading to permanently suppressed when that change is absent.
+- [ ] 2.1 Implement the readiness predicate over the lifecycle state from `add-cgc-session-lifecycle-gate` (ready for clean/drift/syncing/indexing/rebuilding; suppressed for unavailable/unindexed/busy/corrupt), degrading to permanently suppressed when that change is absent.
 - [ ] 2.2 Implement one-shot guideline injection through a `before_agent_start` handler returning the chained system prompt (`systemPrompt: event.systemPrompt + guidance card`), per installed `docs/extensions.md` — with at-most-once semantics including mid-session readiness transitions.
 - [ ] 2.3 Implement fail-open delivery: guard all hook bodies, record errors, cap retries at one per session, never block the agent loop.
 - [ ] 2.4 Ship the routing skill via the package manifest (`"pi": { "skills": [...] }`) and gate its exposure on the opt-in flag through the `resources_discover` event (returning `skillPaths` only when enabled), so it is offered to the agent only when enabled and guidance is ready.

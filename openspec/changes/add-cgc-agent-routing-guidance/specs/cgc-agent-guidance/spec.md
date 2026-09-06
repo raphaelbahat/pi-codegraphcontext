@@ -2,7 +2,6 @@
 
 ### Requirement: Always-on routing guidelines
 
-Feature: `cgc-agent-guidance`
 Rule: The extension SHALL inject a compact, always-on set of routing guidelines into the agent's context whenever guidance is ready, and the guidelines SHALL have no configuration key or off switch of their own.
 
 #### Scenario: Guidelines are injected when ready
@@ -70,6 +69,12 @@ Rule: The extension SHALL provide a routing skill containing deeper CGC onboardi
 - **GIVEN** the user has opted in to the routing skill
 - **WHEN** a session starts with guidance ready
 - **THEN** the agent can consult the routing skill for tool-choice-by-intent, backend caveats, the CGC path sandbox, and indexing basics
+
+#### Scenario: Skill discoverability is evaluated at discovery time
+
+- **GIVEN** the user has opted in to the routing skill and guidance was not ready when the session's skill discovery ran
+- **WHEN** guidance readiness first becomes true later in the same session
+- **THEN** the routing skill's discoverability is not changed retroactively mid-session; it is offered at a discovery evaluation only when the opt-in flag is set and guidance is ready
 
 ### Requirement: Fail-open guidance delivery
 

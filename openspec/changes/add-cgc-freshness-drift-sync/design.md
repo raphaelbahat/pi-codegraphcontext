@@ -46,7 +46,7 @@ In-force ADRs: `adr/0001` (wrap-only runner, skip-as-busy, multi-path teardown),
 
 ### D3: The sync budget exists to bound churn
 
-**Decision:** Auto-syncs are capped per session (default 2). After the budget, further drift only refreshes the advisory stale condition and notices; `/cgc sync` (change 3) remains available for explicit on-demand syncs.
+**Decision:** Auto-syncs are capped per session (default 2). After the budget, further drift only refreshes the advisory stale condition and notices; `/cgc sync` (add-cgc-slash-commands) remains available for explicit on-demand syncs.
 
 **Rationale:** Each sync is a full incremental pass; without a cap, an editing-heavy session would spawn a sync per burst. The cap keeps the feature cheap while `/cgc sync` preserves control.
 
@@ -57,7 +57,7 @@ In-force ADRs: `adr/0001` (wrap-only runner, skip-as-busy, multi-path teardown),
 
 ### D4: Notices are human-facing, once per condition — state is the machine-readable layer
 
-**Decision:** Staleness/skipped/completed conditions surface through the session notice surface at most once per condition per session. The freshness state store is the data layer other surfaces consume; the module writes nothing to the agent context.
+**Decision:** Staleness/skipped/completed conditions surface through the session notice surface at most once per condition per session — three condition keys total (possibly-stale, skipped-busy, sync-completed). The watcher-start-blocked-by-lock notice fires under the same `skipped-busy` condition key as the lazy-sync busy skip, so it shares that key's once-per-session budget rather than adding a fourth condition. The freshness state store is the data layer other surfaces consume; the module writes nothing to the agent context.
 
 **Rationale:** Consistent with ADR-0004's warning discipline and ADR-0002's boundary: anything agent-visible must go through the guidance/injection contracts, which the proactive-injection change (opt-in) will build on this state.
 
@@ -113,14 +113,14 @@ graph TB
 - [Sync contends with the user's MCP server] -> Short-lived indexes plus runner dedup and skip-as-busy keep the lock window small and visible; watcher mode (the risky case) is opt-in with the trade-off documented.
 - [Burst edits cause event storms] -> Dirty marking is debounced; the sync budget bounds spawns regardless of storm size.
 - [Staleness is advisory and can be wrong in both directions] -> By design: over-approximation (possibly-stale when clean) costs one cheap sync; under-approximation is bounded by the documented external-edit gap.
-- [Notices annoy] -> Once-per-condition-per-session, three conditions total, each with an actionable hint (`/cgc sync`).
+- [Notices annoy] -> Once-per-condition-per-session, three condition keys total (possibly-stale, skipped-busy, sync-completed), each with an actionable hint (`/cgc sync`); the watcher-locked busy notice fires under the shared skipped-busy key.
 
 ## Migration Plan
 
-- No migration. Rollback = disable the extension or `freshness.autoSync=false` (state and notices disappear; start-time sync from change 1 still runs).
+- No migration. Rollback = disable the extension or `freshness.autoSync=false` (state and notices disappear; start-time sync from the add-cgc-session-lifecycle-gate change still runs).
 - Downstream consumers (HUD, `/cgc status`) already specify degradation when this capability is absent.
 
 ## Open Questions
 
-- Resolved during validation: the drift-observation event is pinned as `tool_call` (with `toolName`/`input`; complements `tool_execution_start`/`end`) per installed `docs/extensions.md` — no file-specific event exists, and tool-call interception satisfies the conservative requirement (validator verdict FV1).
+- Resolved during validation: the drift-observation event is pinned as `tool_call` (with `toolName`/`input`; complements `tool_execution_start`/`end`) per installed `docs/extensions.md` — no file-specific event exists, and tool-call interception satisfies the conservative requirement (validator finding for task 1.3 in validate.md).
 - None blocking otherwise.

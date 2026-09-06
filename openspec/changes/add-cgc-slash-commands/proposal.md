@@ -8,7 +8,7 @@ CodeGraphContext's MCP server serves the agent, but the human has no in-session 
 - `/cgc index` — create or (with confirmation) force-rebuild the index for the active workspace, honoring the consent gates defined by `add-cgc-session-lifecycle-gate` (auto-create consent; explicit confirmation for destructive rebuilds).
 - `/cgc sync` — trigger a drift sync of the current workspace immediately (same incremental indexing semantics as the session-start gate).
 - `/cgc doctor` — run `cgc doctor` and render its bounded output in the session.
-- `/cgc report` — run `cgc report` to generate the markdown quality report, asking for confirmation before writing `CGC_REPORT.md` into the workspace.
+- `/cgc report` — run `cgc report` to generate the markdown quality report, asking for confirmation before writing the report file (`CGC_REPORT.md` per CGC docs; exact destination confirmed in-session, since the docs do not state the write location).
 - Commands are human-facing conveniences built on the shared `cgc` runner; they register no graph query tools and duplicate no MCP tool surface.
 - Deferred decision (recorded, not implemented): thin agent-facing convenience tools derived from these commands (e.g., impact-before-edit, blast-radius) — future consideration, to avoid duplicating the CGC MCP server's `analyze_code_relationships` surface.
 

@@ -1,6 +1,6 @@
 ## Context
 
-The extension's guidance layer answers a question the CGC MCP server cannot: not "what tools exist" but "when should the agent reach for them." CGC ships an agent-facing skill for Cursor (`.cursor/skills/codegraphcontext/SKILL.md`) but nothing Pi-native. Reference-extension research is unambiguous on two failure modes this design must avoid: guidance injected before tools/index are ready causes hallucinated tool calls (fork-fixed repeatedly), and unconditional prompt injection adds permanent overhead users resent (isac322 ships `promptInjection` as a config toggle for exactly this reason).
+The extension's guidance layer answers a question the CGC MCP server cannot: not "what tools exist" but "when should the agent reach for them." CGC ships an agent-facing skill for Cursor (`.cursor/skills/codegraphcontext/SKILL.md`) but nothing Pi-native. Reference-extension research reportedly shows two failure modes this design must avoid: guidance injected before tools/index are ready causes hallucinated tool calls (a failure mode downstream forks have reportedly fixed repeatedly), and unconditional prompt injection adds permanent overhead users resent (reference extensions reportedly ship prompt-injection toggles for exactly this reason).
 
 In-force ADRs: `adr/0001-cgc-binary-only-integration.md` (Proposed) — wrap-only integration, fail-open posture, no query tools registered by the extension. This design stays inside those constraints; in particular, guidance names MCP graph tools but registers none.
 
@@ -23,7 +23,7 @@ In-force ADRs: `adr/0001-cgc-binary-only-integration.md` (Proposed) — wrap-onl
 
 ### D1: Gate guidance on lifecycle readiness, reusing change 1's state
 
-**Decision:** Guidance readiness is a pure predicate over the lifecycle state machine from `add-cgc-session-lifecycle-gate`: inject only when state ∈ {clean, drift, syncing, indexing} (i.e., `cgc` available AND index exists or is being created). States `unavailable`, `unindexed`, `busy`, `corrupt` suppress injection.
+**Decision:** Guidance readiness is a pure predicate over the lifecycle state machine from `add-cgc-session-lifecycle-gate`: inject only when state ∈ {clean, drift, syncing, indexing, rebuilding} (i.e., `cgc` available AND index exists or is being created). States `unavailable`, `unindexed`, `busy`, `corrupt` suppress injection. The transient `rebuilding` state (the lifecycle gate's `rebuilding ──► clean` transition) is treated as ready: during a rebuild an index is being created, so it falls inside the same readiness rule. ADR-0001's five-bucket state summary folds syncing/indexing into its clean/drift bucket; the richer enumeration here matches the lifecycle-gate spec.
 
 **Rationale:** The readiness signal already exists and is authoritative; re-deriving it here would duplicate the detection logic and risk disagreement. The gate is the recon-confirmed fix for hallucinated tool guidance.
 
@@ -45,9 +45,9 @@ In-force ADRs: `adr/0001-cgc-binary-only-integration.md` (Proposed) — wrap-onl
 
 ### D3: Static, versioned content bundled with the extension
 
-**Decision:** Guideline text and skill content are static files in the extension package, versioned with it, with a one-line scope statement ("for CodeGraphContext v0.5.x"). Content changes ship as extension releases.
+**Decision:** Guideline text and skill content are static files in the extension package, versioned with it, with a one-line scope statement ("for CodeGraphContext v0.6.x"). Content changes ship as extension releases.
 
-**Rationale:** Avoids runtime doc-fetching (network, latency, staleness divergence); the supported CGC version range is already pinned by ADR-0001's coarse-parsing posture.
+**Rationale:** Avoids runtime doc-fetching (network, latency, staleness divergence); the supported CGC version range is to be pinned per ADR-0001's coarse-parsing posture.
 
 **Alternatives considered:**
 
@@ -85,8 +85,10 @@ graph TB
     Cfg --> Skill
     G --> Content
     G -->|"inject at most once,<br/>when ready"| Ctx
-    Skill -.->|"available when opted in"| Ctx
+    Skill -.->|"available when opted in<br/>and guidance is ready"| Ctx
 ```
+
+The routing skill's exposure is additionally gated on the same readiness predicate as guideline injection: discovery is evaluated only at `resources_discover` time, so the skill is offered only when the opt-in flag is set and guidance is ready.
 
 ## Risks / Trade-offs
 
@@ -103,5 +105,5 @@ graph TB
 
 ## Open Questions
 
-- Resolved during validation: delivery mechanism pinned as `before_agent_start` system-prompt modification (installed `docs/extensions.md`; validator verdict PG1).
+- Resolved during validation: delivery mechanism pinned as `before_agent_start` system-prompt modification (installed `docs/extensions.md`; pinned by validate.md's VALID confirmation for tasks 2.1 / 2.2).
 - None blocking otherwise.

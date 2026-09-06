@@ -2,7 +2,6 @@
 
 ### Requirement: Session-start index detection
 
-Feature: `cgc-index-lifecycle`
 Rule: The extension SHALL determine the CGC index state of the active workspace at session start without slowing or blocking the agent.
 
 #### Scenario: Workspace with an existing index starts a session

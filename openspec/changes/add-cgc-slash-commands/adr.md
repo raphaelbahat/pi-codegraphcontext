@@ -11,6 +11,8 @@ ADR review completed for this change.
 
 - `adr/0001-cgc-binary-only-integration.md` (Proposed, in force — not superseded): commands spawn `cgc` only through the shared runner; skip-as-busy lock policy reused by `/cgc sync`; no query tools registered by this change.
 - `adr/0002-readiness-gated-nonconfigurable-guidance.md` (Proposed, in force — not superseded): unaffected by this change; commands are human-facing and do not touch the guidance readiness predicate or injection contract.
+- `adr/0005-universal-output-policy-pipeline.md` (Proposed, in force — not superseded): its universal output-policy pipeline is the target the shared output-hygiene renderer in design D4 pre-adapts to; the sibling in-progress change `add-cgc-output-token-economy` will complete that convergence.
+- `adr/0004-passive-status-renderers.md` (Proposed, in force — not superseded): its passive-renderer rule applies to `/cgc status` rendering — the command renders lifecycle state on demand and performs no maintenance work.
 
 ## New Durable ADRs Created
 

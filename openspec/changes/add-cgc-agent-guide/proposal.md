@@ -1,6 +1,6 @@
 ## Why
 
-Every surface in this extension assumes someone taught the agent which tool to reach for — but the knowledge is scattered across tool descriptions, injected guidelines, and README prose. Reference practice (codeLens's `docs/agent-guide.md`) shows that a single, intent-first guide written for the agent as a first-class reader is the cheapest way to make the whole surface discoverable — and it doubles as human onboarding documentation. This change ships that guide for `pi-codegraphcontext`.
+Every surface in this extension assumes someone taught the agent which tool to reach for — but the knowledge is scattered across tool descriptions, injected guidelines, and README prose. Reference practice (a prior project's `docs/agent-guide.md`) shows that a single, intent-first guide written for the agent as a first-class reader is the cheapest way to make the whole surface discoverable — and it doubles as human onboarding documentation. This change ships that guide for `pi-codegraphcontext`.
 
 ## What Changes
 
@@ -9,7 +9,8 @@ Every surface in this extension assumes someone taught the agent which tool to r
   - One worked end-to-end example session showing the routing decisions in context.
   - Backend caveats summary (fuzzy-search semantics per backend, path sandbox, output-format notes) and configuration/consent overview (what runs automatically, what asks first).
   - Troubleshooting pointers (unindexed workspace, busy/lock conflicts, missing `cgc`).
-- Discovery: the repository README links the guide; the opt-in routing skill references it as the deep-dive continuation.
+  - (The backend-caveats, configuration/consent, and troubleshooting bullets above are task-level detail delivered by task 1.1; the spec-level requirements anchor the routing coverage, example session, accuracy coupling, and discovery links.)
+- Discovery: the repository README (created if absent) links the guide; the opt-in routing skill references it as the deep-dive continuation.
 - An accuracy test that asserts every extension surface named in the guide (tools, commands, config keys) actually exists — the documentation cannot silently drift from the implementation.
 - A scope line naming the supported CGC version range, versioned with the extension.
 - Documentation only: no runtime code, no tool registrations, no injected content.

@@ -17,6 +17,24 @@ Rule: The extension SHALL render a one-line CGC status chip in the TUI status/fo
 - **WHEN** the TUI renders the status area
 - **THEN** the chip shows the running activity rather than a terminal state
 
+#### Scenario: Unindexed state is rendered
+
+- **GIVEN** the active workspace has no CGC index and no CGC work is running
+- **WHEN** the TUI renders the status area
+- **THEN** the chip shows the workspace as unindexed rather than ready
+
+#### Scenario: Busy state is rendered on lock conflict
+
+- **GIVEN** a maintenance action was skipped because another CGC process holds the embedded database
+- **WHEN** the TUI renders the status area
+- **THEN** the chip shows the workspace as busy rather than ready
+
+#### Scenario: Corrupt state is rendered
+
+- **GIVEN** the workspace's index is classified as corrupt and no CGC work is running
+- **WHEN** the TUI renders the status area
+- **THEN** the chip shows the workspace's index as corrupt rather than ready
+
 #### Scenario: Unavailable state is rendered
 
 - **GIVEN** the `cgc` binary is not available

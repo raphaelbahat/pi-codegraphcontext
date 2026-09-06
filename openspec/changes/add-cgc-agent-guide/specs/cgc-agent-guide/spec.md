@@ -2,7 +2,6 @@
 
 ### Requirement: Shipped intent-first guide
 
-Feature: `cgc-agent-guide`
 Rule: The extension repository SHALL include `docs/agent-guide.md`, organized intent-first (by the question being asked, not by tool listing), covering every extension surface.
 
 #### Scenario: Guide is present

@@ -9,7 +9,7 @@ In a git worktree setup, several checkouts of one repository exist side by side,
 - Identity-checked, fail-closed: the extension records the mapping (worktree identity = repository common dir + worktree id); if a resolved context's identity no longer matches the session's worktree — replaced, re-registered, or pointing at a different repository — the extension reports an unknown/identity-mismatch state instead of silently querying another worktree's graph.
 - Stale-worktree notices, never autonomous deletion: when a mapped worktree directory no longer exists (pruned), the extension surfaces a one-time notice naming the orphaned context and the cleanup command (`/cgc_context delete`); it never deletes registrations or files on its own, per the ADR-0003 consent model.
 - Main checkouts and non-git directories are unaffected; when the mode is `off`, CGC's own context resolution applies unchanged.
-- Config keys: `worktree.mode` (default `off`), each with environment-variable overrides.
+- Config key: `worktree.mode` (default `off`), with an environment-variable override.
 
 ## Capabilities
 

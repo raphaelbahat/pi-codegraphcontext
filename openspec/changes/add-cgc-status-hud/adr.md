@@ -13,6 +13,6 @@ ADR review completed for this change.
 - `adr/0002-readiness-gated-nonconfigurable-guidance.md` (Proposed, in force): the display writes nothing to agent context, leaving the guidance contract untouched.
 - `adr/0003-confirmation-gated-destructive-actions.md` (Proposed, in force): the chip exposes no actions; all actions remain in `/cgc` commands behind the consent layer.
 
-## New Durable ADRs Created
+## New Durable ADRs Planned
 
-- `adr/0004-passive-status-renderers.md` — Status surfaces are passive renderers: no spawns, no polling, no agent-context writes; structurally no runner access; headless no-op (Nygard format; Status: Proposed). Establishes the rendering boundary that all future display surfaces in this extension must inherit.
+- `adr/0004-passive-status-renderers.md` (to be created during implementation) — Status surfaces are passive renderers: no spawns, no polling, no agent-context writes; structurally no runner access; headless no-op (Nygard format; Status: Proposed). Establishes the rendering boundary that all future display surfaces in this extension must inherit.

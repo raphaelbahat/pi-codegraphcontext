@@ -6,7 +6,7 @@ Reactive tools wait for the agent to ask; proactive context does the retrieval f
 
 - Tier 1 — session-start coverage note (enabled by default, `proactive.sessionNote` opt-out): a single capped paragraph injected at most once per session when guidance is ready, summarizing what the graph covers for the active workspace (indexed repositories, languages, symbol counts when the cached probe captured them, the coverage snapshot time, and the supported CGC scope line). Derived entirely from already-captured probe data — no new spawns.
 - Tier 2a — drift steers (opt-in, `proactive.driftSteers` default false): when freshness transitions to possibly-stale, inject one agent-facing steer per staleness episode (not per turn), pointing at `/cgc sync` and the freshness state. Consumes the freshness state from `add-cgc-freshness-drift-sync`; disabled means never.
-- Tier 2b — result annotations (opt-in, `proactive.resultAnnotations` default false): one-line freshness annotations appended to the extension's own tool and command outputs (e.g., `/cgc doctor`, CLI-gap tools) when staleness is relevant. The extension cannot intercept the CGC MCP server's results — annotations deliberately scope to surfaces the extension owns.
+- Tier 2b — result annotations (opt-in, `proactive.resultAnnotations` default false): one-line freshness annotations appended to the extension's own tool and command outputs (e.g., `/cgc doctor`, CLI-gap tools) when staleness is relevant. Annotations deliberately scope to surfaces the extension owns; CGC MCP server results are excluded by recorded decision, not by platform limitation (the harness's `tool_result` event exists but is rejected as a surprising annotation surface).
 - Contract compliance: all injection reuses the readiness predicate from ADR-0002 (nothing fires when `cgc` is unavailable or the index is absent), stays fail-open and time-boxed, never blocks the loop, and never duplicates the routing guideline card's content (different content class: coverage facts, not routing rules).
 - Deferred decision (recorded, not implemented): deeper proactive curation (Fovea-style per-turn maps) — future consideration only; this change's tiers are the recorded scope.
 
@@ -22,7 +22,7 @@ Reactive tools wait for the agent to ask; proactive context does the retrieval f
 
 ## Impact
 
-- Extension package `pi-codegraphcontext`; injects through Pi's documented prompt-guideline mechanism (same surface as the routing guidelines) and annotates only extension-owned outputs.
+- Extension package `pi-codegraphcontext`; injects through the documented before_agent_start system-prompt mechanism (same surface as the routing guidelines) and annotates only extension-owned outputs.
 - Consumes readiness (lifecycle state) and freshness state; degrades to silent when either is unavailable.
 - Config keys: `proactive.sessionNote` (default true), `proactive.driftSteers` (default false), `proactive.resultAnnotations` (default false) — each with environment-variable overrides.
-- No changes to CodeGraphContext or the MCP server; no interception of MCP tool results (outside the extension's control by design).
+- No changes to CodeGraphContext or the MCP server; no interception of MCP tool results (excluded by recorded decision, not by platform limitation).

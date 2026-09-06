@@ -2,15 +2,8 @@
 
 - Validated against: live framework/library/tool documentation
 - Validation date: 2026-09-06
-- Verdict: READY
 
 Validation method: one read-only validator (single technology group spanning the Pi injection/event surface and the CGC stats verb) checked every externally-observable claim in tasks.md against the locally installed Pi documentation (bundled docs, authoritative for the installed version) and the project's live files on GitHub `main`, corroborated empirically against the locally installed CGC binary.
-
----
-
-## INVALID — requires revision
-
-None.
 
 ---
 
@@ -25,6 +18,7 @@ None.
 
 - `cgc stats` is documented as "Repository and node counts for the active context" and empirically returns an Overall Database Statistics table (Repositories, Files, Functions, Classes, Interfaces, Modules; per-repo via the optional `path` argument) — exactly the coverage fields the note summarizes.
   - Evidence: <https://raw.githubusercontent.com/CodeGraphContext/CodeGraphContext/main/docs/docs/reference/cli.md> (stats row) ; local `cgc stats` / `cgc stats --help` run on the installed binary
+  - Empirical excerpt (local `cgc stats`, 2026-09-06): table titled `Overall Database Statistics` with rows `Repositories`, `Files`, `Functions`, `Classes`, `Interfaces`, `Modules` (columns `Metric` / `Count`).
 
 ### 2.1
 

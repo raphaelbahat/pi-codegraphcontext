@@ -3,7 +3,7 @@
 ### Requirement: Tool availability with opt-out
 
 Feature: `cgc-cli-bridge`
-Rule: The extension SHALL register the three CLI-gap tools (`cgc_bundle_export`, `cgc_context`, `cgc_doctor`) when `tools.cliGap.enabled` is true (the default), and SHALL NOT register them when it is disabled.
+Rule: The extension SHALL register the three CLI-gap tools (`cgc_bundle_export`, `cgc_context`, `cgc_doctor`) when `tools.cliGap.enabled` is true (the default), SHALL NOT register them when it is disabled, and SHALL treat an explicit environment-variable override as taking precedence over the config key.
 
 #### Scenario: Default installation exposes the tools
 
@@ -16,6 +16,12 @@ Rule: The extension SHALL register the three CLI-gap tools (`cgc_bundle_export`,
 - **GIVEN** `tools.cliGap.enabled` is disabled
 - **WHEN** a session starts
 - **THEN** none of the three tools is registered and no tool-catalog entry for them exists
+
+#### Scenario: Environment override wins over the config key
+
+- **GIVEN** `tools.cliGap.enabled` is true in configuration but the override environment variable explicitly disables the tool set
+- **WHEN** a session starts
+- **THEN** none of the three tools is registered — the override takes precedence over the config key
 
 ### Requirement: Bundle export with confirmation
 
@@ -73,25 +79,25 @@ Rule: `cgc_doctor` SHALL run CGC diagnostics read-only and return bounded, polic
 
 ### Requirement: Shared guardrails and structured errors
 
-Rule: Every CLI-gap tool MUST execute through the shared runner guardrails (argument-array, session working directory, time budget, abort, output-policy pipeline), MUST NOT bypass CGC's path sandbox, and MUST return structured, agent-actionable error codes with remediation hints (for example not-found, busy, timeout) rather than raw stack traces.
+Rule: Every CLI-gap tool MUST execute through the shared runner guardrails (argument-array, session working directory, time budget, abort, output-policy pipeline), MUST NOT bypass CGC's path sandbox, and MUST return structured, agent-actionable error codes with remediation hints (for example NOT_FOUND, BUSY, TIMEOUT; canonical form UPPER_SNAKE, rendered case-insensitively) rather than raw stack traces.
 
 #### Scenario: Sandboxed path rejected cleanly
 
 - **GIVEN** the agent calls a tool with a path outside the allowed roots
 - **WHEN** CGC rejects it
-- **THEN** the tool returns a structured not-allowed error naming the constraint and how to fix it, not a stack trace
+- **THEN** the tool returns a structured NOT_ALLOWED error naming the constraint and how to fix it, not a stack trace
 
 #### Scenario: cgc missing
 
 - **GIVEN** the `cgc` executable is not available
 - **WHEN** the agent calls any CLI-gap tool
-- **THEN** the tool returns a structured unavailable error with installation guidance
+- **THEN** the tool returns a structured UNAVAILABLE error with installation guidance
 
 #### Scenario: Busy database
 
 - **GIVEN** another CGC process holds the embedded database
 - **WHEN** the agent calls `cgc_doctor` or an export that needs the database
-- **THEN** the tool returns a structured busy error naming the conflict instead of retrying or crashing
+- **THEN** the tool returns a structured BUSY error naming the conflict instead of retrying or crashing
 
 ### Requirement: No duplication of the MCP catalog
 

@@ -2,7 +2,6 @@
 
 ### Requirement: Freshness state tracking
 
-Feature: `cgc-freshness-sync`
 Rule: The extension SHALL maintain a freshness state for the active workspace — last successful sync time and a conservative dirty condition — and SHALL expose it to other extension surfaces (status display, slash commands).
 
 #### Scenario: Fresh after a completed sync

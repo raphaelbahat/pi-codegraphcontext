@@ -1,6 +1,8 @@
 ## Context
 
-The campaign's pieces meet here: readiness (ADR-0001's lifecycle state), coverage data (the lifecycle probe's captured stats), staleness (ADR-0007's freshness state), and the delivery mechanism (ADR-0002's documented prompt-guideline surface). The project owner recorded the two-tier configuration split — session-start coverage note enabled by default with opt-out; drift steers and result annotations opt-in (disabled by default) — resolving the tension the reference research exposed: CKG's proactive injection proved valuable but is exactly the layer users ask to turn off, so the quiet default and the intrusive extras must carry different defaults.
+The campaign's pieces meet here: readiness (ADR-0001's lifecycle state), coverage data (the lifecycle probe's captured stats), staleness (ADR-0007's freshness state), and the delivery mechanism (ADR-0002's documented prompt-guideline surface). The project owner recorded the two-tier configuration split — session-start coverage note enabled by default with opt-out; drift steers and result annotations opt-in (disabled by default) — resolving the tension the reference research exposed: reference-extension experience suggests CKG's proactive injection proved valuable but is exactly the layer users ask to turn off, so the quiet default and the intrusive extras must carry different defaults.
+
+Cross-change references below use the campaign's numbering: change 1 = `add-cgc-session-lifecycle-gate`, change 2 = `add-cgc-agent-routing-guidance`, change 7 = `add-cgc-freshness-drift-sync`, change 8 = `add-cgc-agent-guide`.
 
 In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract: this capability is the sanctioned second writer of agent-visible content, reusing the readiness predicate and never bypassing non-configurability of the routing card), `adr/0003`–`adr/0006` (consent, renderers, output policy, tool boundary — untouched), `adr/0007` (freshness states are the trigger source for steers).
 
@@ -14,7 +16,7 @@ In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract: thi
 
 **Non-Goals:**
 
-- No interception of CGC MCP server results (no such hook exists; annotations scope to extension-owned outputs only).
+- No interception of CGC MCP server results — by recorded decision: the documented `tool_result` event could patch their content, but annotating another surface's results is rejected as surprising; annotations scope to extension-owned outputs only.
 - No per-turn maps or Fovea-style curation (deferred, recorded in the proposal).
 - No new config surface beyond the three tier keys.
 - No changes to the routing guideline card or its non-configurability.
@@ -25,7 +27,7 @@ In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract: thi
 
 **Decision:** `proactive.sessionNote` (default true) governs the coverage note; `proactive.driftSteers` (default false) and `proactive.resultAnnotations` (default false) govern the agent-intrusive surfaces. Each key has an environment-variable override.
 
-**Rationale:** The coverage note is quiet, bounded, and factual — safe to default on. Steers and annotations touch the agent repeatedly or alter perceived output — they must be deliberately chosen. This matches the owner's recorded split and the CKG lesson (proactivity is valuable until it is noise).
+**Rationale:** The coverage note is quiet, bounded, and factual — safe to default on. Steers and annotations touch the agent repeatedly or alter perceived output — they must be deliberately chosen. This matches the owner's recorded split and the reference-extension lesson (proactivity is valuable until it is noise).
 
 **Alternatives considered:**
 
@@ -34,7 +36,7 @@ In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract: thi
 
 ### D2: The coverage note is built from cached probe data only
 
-**Decision:** The note renders from the lifecycle probe's already-captured capture (repositories, languages, symbol counts when available, snapshot time, scope line) with a hard length cap; if counts are missing it degrades to a minimal presence-and-time note. Building it never spawns `cgc`.
+**Decision:** The note renders from the lifecycle probe's already-captured data (repositories, languages, symbol counts when available, snapshot time, scope line) with a hard length cap; if counts are missing it degrades to a minimal presence-and-time note. Building it never spawns `cgc`.
 
 **Rationale:** The probe already ran for readiness; a second spawn for content the note only paraphrases would violate the invocation budget and ADR-0004's passivity instincts.
 
@@ -56,9 +58,9 @@ In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract: thi
 
 ### D4: Annotations attach only to extension-owned outputs
 
-**Decision:** Tier 2b appends one staleness line to outputs the extension itself produces (slash-command renders, CLI-gap tool results). CGC MCP server results are explicitly out of scope — the extension has no hook there and must not pretend otherwise.
+**Decision:** Tier 2b appends one staleness line to outputs the extension itself produces (slash-command renders, CLI-gap tool results). CGC MCP server results are out of scope by recorded decision: the harness-documented `tool_result` event exists and could patch their content, but annotating another surface's results is rejected as surprising.
 
-**Rationale:** Honest scoping: the annotation tier improves the surfaces the extension owns; MCP result annotation would require intercepting another process's protocol.
+**Rationale:** Honest scoping: the annotation tier improves the surfaces the extension owns; MCP result annotation is technically available via the `tool_result` event but is rejected as a surprising surface for modifying another writer's output.
 
 **Alternatives considered:**
 
@@ -70,7 +72,7 @@ In-force ADRs: `adr/0001` (wrap-only runner), `adr/0002` (guidance contract: thi
 
 **Rationale:** Single gating path, single fail-open story, and a structural duplication test keep the guidance contract intact while adding the second sanctioned content writer.
 
-### Architecture (C4 — component level)
+## Architecture (C4 — component level)
 
 ```mermaid
 graph TB

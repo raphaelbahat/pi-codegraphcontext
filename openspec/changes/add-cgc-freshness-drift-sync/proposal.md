@@ -1,6 +1,6 @@
 ## Why
 
-A graph that was fresh at session start goes stale the moment the first edit lands, and nothing tells the agent or user that graph answers are now aging. Change 1 reconciled drift at session start only; this change — the second bedrock of `pi-codegraphcontext` — keeps the freshness story honest for the whole session: drift is observed as edits happen, the graph is re-synced conservatively, and staleness is always visible rather than silent.
+A graph that was fresh at session start goes stale the moment the first edit lands, and nothing tells the agent or user that graph answers are now aging. The add-cgc-session-lifecycle-gate change reconciled drift at session start only; this change — the second bedrock of `pi-codegraphcontext` — keeps the freshness story honest for the whole session: drift is observed as edits happen, the graph is re-synced conservatively, and staleness is always visible rather than silent.
 
 ## What Changes
 

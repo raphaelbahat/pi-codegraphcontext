@@ -47,13 +47,13 @@ In-force ADRs: `adr/0001-cgc-binary-only-integration.md` (Proposed) and `adr/000
 
 **Decision:** `sync` (and any index action) that hits an embedded-database lock reports the busy state with a one-time notice naming the conflict — identical to the gate's skip-as-busy policy — and exits the command cleanly.
 
-**Rationale:** Same single-process reality as ADR-0001's D4; commands must not fight locks any more than the gate does.
+**Rationale:** Same single-process reality as ADR-0001's Decision prose ("lock/busy conflicts are skipped with a one-time notice"); commands must not fight locks any more than the gate does.
 
 ### D4: Output hygiene for rendered command output
 
 **Decision:** All command output passes through the shared bounding policy (size-capped with explicit truncation marker, head+tail preserved) and strips control sequences before rendering.
 
-**Rationale:** `cgc doctor`/`cgc report` emit rich terminal output; unbounded or ANSI-laden output would pollute the session transcript. This also pre-adapts the runner for the output-economy change.
+**Rationale:** `cgc doctor`/`cgc report` emit rich terminal output; unbounded or ANSI-laden output would pollute the session transcript. This renderer pre-adapts to ADR-0005's universal output-policy pipeline (the target the shared bounding policy converges on), and ADR-0004's passive-renderer rule governs how status output is rendered.
 
 ### Architecture (C4 — component level)
 

@@ -6,7 +6,7 @@
 
 ## 2. Consent and action handlers
 
-- [ ] 2.1 Implement the consent layer per ADR-0003: explicit in-session confirmation for force rebuild (naming the replace effect) and for report (naming the `CGC_REPORT.md` destination); no skip-confirmation option for these actions.
+- [ ] 2.1 Implement the consent layer per ADR-0003: explicit in-session confirmation for force rebuild (naming the replace effect) and for report (naming the confirmed destination path — filename per CGC docs; location verified empirically per validate.md); no skip-confirmation option for these actions.
 - [ ] 2.2 Implement `/cgc index`: creation path honoring the auto-create consent gate; force path behind confirmation; work triggered through the shared runner in the background with progress state.
 - [ ] 2.3 Implement `/cgc sync`: incremental index trigger with runner deduplication (joins an in-flight sync rather than duplicating it) and skip-as-busy notice on embedded-database locks.
 - [ ] 2.4 Implement `/cgc doctor` and `/cgc report` (post-confirmation) through the shared runner with bounded, cleaned output rendering.

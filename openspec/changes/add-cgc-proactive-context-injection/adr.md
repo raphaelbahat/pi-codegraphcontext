@@ -20,4 +20,4 @@ ADR review completed for this change.
 
 ## New Durable ADRs Created
 
-- `adr/0009-two-tier-proactive-injection.md` — Proactive injection is two-tier: default-on session coverage note, opt-in drift steers and result annotations (Nygard format; Status: Proposed). Codifies the recorded configuration split, the readiness-predicate reuse, the disjoint-content-class rule, and the MCP-results-out-of-scope boundary.
+- `adr/0009-two-tier-proactive-injection.md` — Proactive injection is two-tier: default-on session coverage note, opt-in drift steers and result annotations (Nygard format; Status: Proposed). Codifies the recorded configuration split, the readiness-predicate reuse, the disjoint-content-class rule, and the MCP-results-out-of-scope boundary (a recorded decision, not a platform limitation — the harness's `tool_result` event exists but is rejected as a surprising annotation surface; the ADR text is to be aligned via task 3.5).

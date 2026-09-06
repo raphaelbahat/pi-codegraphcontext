@@ -1,7 +1,19 @@
 schema: intent-driven-strict
 
 context: |
-  Tech stack: TypeScript frontend (Expo + Next.js monorepo), Python backend (Litestar + Telethon), PostgreSQL
+  Repo: pi-codegraphcontext — a Pi coding-agent extension integrating CodeGraphContext (CGC)
+  so the agent can query the FalkorDB code graph (nodes, relationships, impact) without
+  burning context on raw source. Currently in the planning phase: this tree holds the
+  OpenSpec planning home (schema: intent-driven-strict) with ten planned changes (session
+  lifecycle gate, proactive context injection, worktree-aware contexts, agent guide +
+  routing guidance, CLI gap tools, output token economy, slash commands, status HUD,
+  freshness drift sync) and the ADRs they created (adr/0001–0009, all Status: Proposed —
+  in force as a set). The `cgc` CLI v0.6.x is installed in this environment and is the
+  integration target (binary-only posture, per ADR-0001). Implementation lands here as
+  changes are applied. The validation/authoring workflows (openspec-validate-change,
+  openspec-plan-change) and the checkpoint-bridge extension live in ~/pi-workflows
+  (see that repo's docs/adr/). Validation sweeps must leave .scratch/ (slipstream's
+  recovery area) alone — scorecards default to .openspec-reports/.
 
 rules:
   proposal:

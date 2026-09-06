@@ -26,3 +26,7 @@ coverage/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Slipstream recovery artifacts + local workflow outputs (scorecards)
+.scratch/
+.openspec-reports/

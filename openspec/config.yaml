@@ -2,7 +2,7 @@ schema: intent-driven-strict
 
 context: |
   Repo: pi-codegraphcontext — a Pi coding-agent extension integrating CodeGraphContext (CGC)
-  so the agent can query the FalkorDB code graph (nodes, relationships, impact) without
+  so the agent can query the code graph (nodes, relationships, impact) without
   burning context on raw source. Currently in the planning phase: this tree holds the
   OpenSpec planning home (schema: intent-driven-strict) with ten planned changes (session
   lifecycle gate, proactive context injection, worktree-aware contexts, agent guide +

@@ -1,0 +1,49 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # release-please parses conventional commits, opens/updates a Release PR
+      # (CHANGELOG.md), and publishes the tag + GitHub Release when it merges.
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Fully automated releases: merge the Release PR immediately. Publishing
+      # is handled by release-publish.yml (workflow_run escape hatch: pushes
+      # made with GITHUB_TOKEN do not trigger workflows).
+      - name: Auto-merge the Release PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_JSON: ${{ steps.release.outputs.pr }}
+        run: |
+          PR=""
+          if [ -n "$PR_JSON" ] && [ "$PR_JSON" != "null" ]; then
+            PR=$(printf '%s' "$PR_JSON" | jq -r '.prNumber // empty')
+          fi
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+                   --head "release-please--branches--main" --state open \
+                   --json number --jq '.[0].number // empty')
+          fi
+          if [ -n "$PR" ]; then
+            echo "Merging Release PR #$PR"
+            gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --merge
+          else
+            echo "No Release PR to merge."
+          fi

@@ -1,9 +1,5 @@
 {
   "people": [],
   "projects": [],
-  "topics": [
-    "OpenSpec",
-    "Gherkin",
-    "Markdown"
-  ]
+  "topics": ["OpenSpec", "Gherkin", "Markdown"]
 }

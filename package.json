@@ -1,0 +1,46 @@
+{
+  "name": "pi-codegraphcontext",
+  "version": "0.1.0",
+  "description": "Pi coding-agent extension for CodeGraphContext (CGC): index lifecycle gate, freshness sync, agent routing guidance, status surfaces, and CLI-gap tools wrapping the cgc binary.",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raphaelbahat/pi-codegraphcontext.git"
+  },
+  "exports": {
+    ".": "./extensions/index.ts"
+  },
+  "types": "./extensions/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "format": "biome check --write .",
+    "format:check": "biome check .",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.12",
+    "@commitlint/cli": "^21.2.2",
+    "@commitlint/config-conventional": "^21.2.2",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "github-actionlint": "^1.7.12",
+    "typebox": "^1.0.9",
+    "typescript": "^7.0.2"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "engines": {
+    "bun": ">=1.4"
+  }
+}

@@ -1,0 +1,21 @@
+schema: intent-driven-strict
+
+context: |
+  Tech stack: TypeScript frontend (Expo + Next.js monorepo), Python backend (Litestar + Telethon), PostgreSQL
+
+rules:
+  proposal:
+    - Must use grill-me skill
+  design:
+    - Must use c4-architecture skill
+  adr:
+    - Must use architectural-decision-records skill
+  specs:
+    - Must use gherkin-authoring skill
+  validate:
+    - Sub-agents are read-only — they validate against live docs and return verdicts; they never edit files
+    - "Access documentation in order: Context7, then jina or exa, then a native web fetch tool (e.g., WebFetch)"
+    - If sub-agent deployment fails or is unavailable, run the validation in the main agent (session) instead
+    - Every verdict must cite a source URL; flag anything without evidence as UNCERTAIN rather than guessing
+    - Do not approve edits yourself — always prompt the user before revising tasks.md or related artifacts
+    - After revision, the change must still pass `openspec validate --strict` and all artifacts must remain coherent with one another

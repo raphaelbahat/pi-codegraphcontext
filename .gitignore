@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Test & coverage
+coverage/
+.nyc_output/
+
+# Logs & caches
+*.log
+.cache/
+
+# Pi harness local state
+.pi/
+
+# OS cruft
+.DS_Store
+Thumbs.db

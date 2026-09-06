@@ -1,0 +1,22 @@
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "openspec-archived-tasks",
+    name = "OpenSpec archived tasks",
+    entry = "bunx --no-install openspec validate --archived --no-interactive",
+    language = "system",
+    pass_filenames = false,
+    always_run = true,
+    stages = ["pre-commit"]
+  },
+  {
+    id = "actionlint",
+    name = "actionlint",
+    entry = "rhysd/actionlint:1.7.12",
+    language = "docker_image",
+    pass_filenames = false,
+    always_run = true,
+    stages = ["pre-commit"]
+  }
+]

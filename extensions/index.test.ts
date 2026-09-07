@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test'
-import * as entry from './index'
+import entry from './index'
 
 describe('extension entry', () => {
-  it('loads', () => {
-    expect(entry).toBeDefined()
+  it('exports a default Pi extension factory', () => {
+    expect(typeof entry).toBe('function')
   })
 })

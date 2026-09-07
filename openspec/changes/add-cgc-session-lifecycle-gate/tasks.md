@@ -1,6 +1,6 @@
 ## 1. Extension foundation
 
-- [ ] 1.1 Scaffold the `pi-codegraphcontext` TypeScript extension package (npm `pi-package` metadata, `pi.extensions` manifest, TypeScript build) registered against the Pi extension API.
+- [x] 1.1 Scaffold the `pi-codegraphcontext` TypeScript extension package (npm `pi-package` metadata, `pi.extensions` manifest, TypeScript build) registered against the Pi extension API.
 - [ ] 1.2 Implement config loading for `cgc.executable` (default `cgc`), `cgc.timeoutMs` (default 30000; version probe 10000), `lifecycle.autoCreate` (default false), `lifecycle.syncOnStart` (default true), each with environment-variable overrides.
 - [ ] 1.3 Implement the `cgc` command runner: argument-array spawn with explicit `cwd` from the Pi session context, time budget, abort signal, bounded output capture, structured error codes, and per-workspace in-flight deduplication.
 - [ ] 1.4 Implement multi-path process cleanup (session shutdown hook, process exit handler, signal handlers) so no extension-spawned `cgc` process outlives the session.

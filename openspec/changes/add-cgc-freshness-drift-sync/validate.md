@@ -54,3 +54,5 @@ None outstanding. (The validator-pinned event name was applied to design.md with
 ## Verdict
 
 `VERDICT: READY`
+
+> **Re-validated 2026-09-07** after the disposition pass revised tasks.md and sibling artifacts — `openspec validate --type change --strict` passed; the READY verdict below is re-confirmed as of this date.

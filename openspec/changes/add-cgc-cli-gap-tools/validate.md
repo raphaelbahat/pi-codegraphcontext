@@ -58,3 +58,5 @@ None outstanding. (CB5's snake_case/camelCase gloss nit is documentation-level, 
 ## Verdict
 
 `VERDICT: READY`
+
+> **Re-validated 2026-09-07** after the disposition pass revised tasks.md and sibling artifacts — `openspec validate --type change --strict` passed; the READY verdict below is re-confirmed as of this date.

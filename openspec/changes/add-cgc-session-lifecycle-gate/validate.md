@@ -74,3 +74,5 @@ None. (Informational nuances above are recorded as implementation guidance, not 
 `VERDICT: READY`
 
 > **Re-validated 2026-09-07** after the disposition pass revised tasks.md and sibling artifacts — `openspec validate --type change --strict` passed; the READY verdict below is re-confirmed as of this date.
+
+> **Re-validated 2026-09-07 (post task 1.1 verification marking)** — `openspec validate --type change --strict` passed; READY re-confirmed after the latest tasks.md revision.

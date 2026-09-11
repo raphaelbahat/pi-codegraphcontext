@@ -18,10 +18,10 @@
 ## 3. State exposure and resilience
 
 - [x] 3.1 Expose the lifecycle state (workspace path, state, last action, timestamps) internally for downstream surfaces (status HUD, slash commands) without registering any graph query tools.
-- [ ] 3.2 Guarantee fail-open behavior: guard every hook body, cap failed-work retries at one per session, and never block or interrupt the agent loop.
-- [ ] 3.3 Add unit/integration tests covering each state transition, dedup, timeout/cancellation, cleanup paths, and the consent gates.
+- [x] 3.2 Guarantee fail-open behavior: guard every hook body, cap failed-work retries at one per session, and never block or interrupt the agent loop.
+- [x] 3.3 Add unit/integration tests covering each state transition, dedup, timeout/cancellation, cleanup paths, and the consent gates.
 
 ## 4. Validation and closure
 
-- [ ] 4.1 Verify all scenarios in `specs/cgc-index-lifecycle/spec.md` against the implementation.
-- [ ] 4.2 Run `openspec validate add-cgc-session-lifecycle-gate --type change --strict` before archive.
+- [x] 4.1 Verify all scenarios in `specs/cgc-index-lifecycle/spec.md` against the implementation.
+- [x] 4.2 Run `openspec validate add-cgc-session-lifecycle-gate --type change --strict` before archive.

@@ -9,6 +9,7 @@ import {
   type ProcessCleanupHandle,
 } from './cleanup'
 import { type ConfigResult, loadConfig } from './config'
+import { type GateExtensionApi, LifecycleGate } from './gate'
 import { LifecycleStateStore } from './lifecycle-state'
 import { CgcRunner } from './runner'
 import { WorkspaceDetector } from './workspace'
@@ -18,6 +19,7 @@ let cachedRunner: CgcRunner | undefined
 let cachedCleanup: ProcessCleanupHandle | undefined
 let cachedDetector: WorkspaceDetector | undefined
 let cachedStateStore: LifecycleStateStore | undefined
+let cachedGate: LifecycleGate | undefined
 
 /**
  * Resolved extension configuration (defaults <- config files <- env overrides).
@@ -104,11 +106,34 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
     // runner's per-command timeout and abort-signal paths.
   }
 
-  // The lifecycle gate (session_start) is registered by the remaining
-  // add-cgc-* tasks; the state it produces is exposed via
-  // `getLifecycleStateStore()` for the later status-HUD and slash-command
-  // changes. No graph query tools are registered by this extension — the CGC
-  // MCP server remains the query engine (ADR 0001). The entry stays fail-open:
-  // it never throws during load or registration.
+  // Task 3.2: the lifecycle gate. Registered only when the runner exists (a
+  // failed runner means no gate can spawn anything — the extension degrades
+  // to doing nothing, which is the point of fail-open). The gate wires
+  // `session_start` / `session_shutdown` hooks that run the five-state
+  // lifecycle state machine off `ctx.cwd` (never `process.cwd()`), guarded
+  // so no hook body can ever throw, block, or interrupt the agent loop.
+  try {
+    if (cachedRunner !== undefined) {
+      cachedGate ??= new LifecycleGate({
+        runner: cachedRunner,
+        config: getConfig().config,
+        api: pi as unknown as GateExtensionApi,
+      })
+      cachedGate.register()
+    }
+  } catch {
+    // Fail-open: gate registration must never break extension load. Without
+    // a registered gate the extension performs no lifecycle work — the
+    // session proceeds normally (the availability/notice surface simply
+    // does not engage).
+  }
+
+  // The lifecycle gate (session_start) is registered by the CGC lifecycle
+  // gate above (`cachedGate`); the state it produces is exposed via its
+  // `lifecycleStore()` (per-session) plus the `getLifecycleStateStore()`
+  // fallback for surfaces that run outside a gate-managed session. No graph
+  // query tools are registered by this extension — the CGC MCP server
+  // remains the query engine (ADR 0001). The entry stays fail-open: it never
+  // throws during load or registration.
   void pi
 }

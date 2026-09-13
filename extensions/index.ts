@@ -8,9 +8,10 @@ import {
   installProcessCleanup,
   type ProcessCleanupHandle,
 } from './cleanup'
+import { type CgcCommandDependencies, registerCgcCommands } from './commands'
 import { type ConfigResult, loadConfig } from './config'
 import { type GateExtensionApi, LifecycleGate } from './gate'
-import { LifecycleStateStore } from './lifecycle-state'
+import { type LifecycleActionInput, LifecycleStateStore } from './lifecycle-state'
 import { CgcRunner } from './runner'
 import { WorkspaceDetector } from './workspace'
 
@@ -126,6 +127,44 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
     // a registered gate the extension performs no lifecycle work — the
     // session proceeds normally (the availability/notice surface simply
     // does not engage).
+  }
+
+  // Task 1.1 (add-cgc-slash-commands): the five human-facing `/cgc` commands.
+  // One `registerCommand("cgc", …)` whose handler dispatches on the first
+  // argument (pi parses invocations at the first space, so `/cgc status`
+  // resolves name `cgc` with args `status`). Task 1.2 wires the read-only
+  // state surface for the status renderer: the gate's per-session lifecycle
+  // store (`lifecycleStore()`) with the process-lifetime store as fallback,
+  // plus the shared runner's in-flight read — status stays a passive renderer
+  // (ADR-0004: no spawns, no polling; the runner read is synchronous and
+  // spawn-free). Task 2.2 wires the action surface for `/cgc index`: the
+  // shared runner (spawn + dedup), the change-1 auto-create consent gate, and
+  // progress-state recording into the same store the status renderer reads.
+  // No freshness provider is passed while add-cgc-freshness-drift-sync is
+  // absent, so `/cgc status` omits the freshness section (specified
+  // degradation). Fail-open: registration must never break extension load —
+  // with a broken API the extension degrades to no commands.
+  try {
+    const dependencies: CgcCommandDependencies = {
+      state: {
+        snapshot: (cwd: string) =>
+          cachedGate?.lifecycleStore()?.snapshot(cwd) ?? getLifecycleStateStore().snapshot(cwd),
+        isInFlight: (cwd: string) => cachedRunner?.isInFlight(cwd) ?? false,
+      },
+      runner: cachedRunner,
+      lifecycle: getConfig().config.lifecycle,
+      recordAction: (input: LifecycleActionInput) => {
+        const store = cachedGate?.lifecycleStore() ?? getLifecycleStateStore()
+        try {
+          store.recordAction(input)
+        } catch {
+          // Fail-open: recording must never break the command handlers.
+        }
+      },
+    }
+    registerCgcCommands(pi, dependencies)
+  } catch {
+    // Fail-open: command registration must never break extension load.
   }
 
   // The lifecycle gate (session_start) is registered by the CGC lifecycle

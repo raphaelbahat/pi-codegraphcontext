@@ -15,5 +15,5 @@
 
 - [x] 3.1 Enforce the destructive-verb exclusion: no command maps to CGC deletion/cleanup operations; assert in a test over the registered command list.
 - [x] 3.2 Test fail-open behavior: commands report unavailability when `cgc` is missing; handler errors never crash or block the session.
-- [ ] 3.3 Verify all scenarios in `specs/cgc-slash-commands/spec.md` against the implementation.
-- [ ] 3.4 Run `openspec validate add-cgc-slash-commands --type change --strict` before archive.
+- [x] 3.3 Verify all scenarios in `specs/cgc-slash-commands/spec.md` against the implementation.
+- [x] 3.4 Run `openspec validate add-cgc-slash-commands --type change --strict` before archive. (Host-executed 2026-09-11: `openspec validate add-cgc-slash-commands --type change --strict` → "Change 'add-cgc-slash-commands' is valid", exit 0; task work verified done, only the checkbox was left unmarked by the blocked verifier.)

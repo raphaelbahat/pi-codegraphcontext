@@ -67,3 +67,5 @@ None outstanding. (The validator-prescribed report-location softening was applie
 `VERDICT: READY`
 
 > **Re-validated 2026-09-07** after the disposition pass revised tasks.md and sibling artifacts — `openspec validate --type change --strict` passed; the READY verdict below is re-confirmed as of this date.
+
+> **Re-validated 2026-09-11 (run #2 host verification, task 3.4)** — `openspec validate add-cgc-slash-commands --type change --strict` → "Change 'add-cgc-slash-commands' is valid", exit 0. All 11 tasks complete (10 pipeline-verified + task 3.4 host-executed). 303/303 tests, `tsc --noEmit` clean. VERDICT: READY re-confirmed.

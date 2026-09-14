@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { LifecycleClassification, LifecycleState } from './classifier'
@@ -15,6 +23,7 @@ import {
 } from './gate'
 import type { CgcCommandResult } from './runner'
 import { CgcRunner } from './runner'
+import { WORKTREE_MAP_FILE, WorktreeDetector, WorktreeMap } from './worktree'
 
 // ---------------------------------------------------------------------------
 // Test scaffolding: canned runner, temp workspaces, classification helpers.
@@ -83,6 +92,11 @@ function makeConfig(
       autoCreate: overrides.autoCreate ?? false,
       syncOnStart: overrides.syncOnStart ?? true,
     },
+    worktree: { mode: 'off' },
+    proactive: { sessionNote: true, driftSteers: false, resultAnnotations: false },
+    freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
+    output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
+    tools: { cliGap: { enabled: true } },
   }
 }
 
@@ -633,6 +647,11 @@ describe('LifecycleGate task 3.3 audit fills (probe budgets, dispose, teardown)'
       config: {
         cgc: { executable: 'cgc', timeoutMs: 1_234, versionProbeTimeoutMs: 5_678 },
         lifecycle: { autoCreate: false, syncOnStart: true },
+        worktree: { mode: 'off' },
+        proactive: { sessionNote: true, driftSteers: false, resultAnnotations: false },
+        freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
+        output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
+        tools: { cliGap: { enabled: true } },
       },
     })
 
@@ -764,6 +783,521 @@ describe('LifecycleGate task 3.3 audit fills (probe budgets, dispose, teardown)'
     } finally {
       rmSync(shimDir, { recursive: true, force: true })
       rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --context flag)', () => {
+  function makeFakeRepo(): string {
+    const repo = mkdtempSync(join(tmpdir(), 'cgc-gate-repo-'))
+    createdDirs.push(repo)
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    return repo
+  }
+
+  function makeFakeWorktree(commonDir: string, id: string): string {
+    const wt = mkdtempSync(join(tmpdir(), 'cgc-gate-wt-'))
+    createdDirs.push(wt)
+    writeFileSync(join(wt, '.git'), `gitdir: ${join(commonDir, 'worktrees', id)}\n`, 'utf8')
+    return wt
+  }
+
+  /** A fake `cgc` that logs every argv, answers verbs, and returns 0. */
+  function installFakeCgc(log: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'cgc-gate-cgc-'))
+    createdDirs.push(dir)
+    const executable = join(dir, 'cgc')
+    const quoted = `'${log.replace(/'/g, `'\\''`)}'`
+    writeFileSync(
+      executable,
+      `${[
+        '#!/bin/sh',
+        `printf '%s\\n' "$*" >> ${quoted}`,
+        'while [ "$1" = "--context" ] || [ "$1" = "-c" ]; do',
+        '  shift 2',
+        'done',
+        'case "$1" in',
+        '  --version) echo "cgc 0.1.0"; exit 0 ;;',
+        '  stats) echo "Repository statistics: 42 files indexed"; exit 0 ;;',
+        '  index) echo "index ok"; exit 0 ;;',
+        // The deliberate delay keeps the creation-in-flight window open past
+        // session route time, so the no-maintenance-while-creating policy is
+        // observable without racing the settle chain.
+        '  context) sleep 0.3; echo "context ok"; exit 0 ;;',
+        '  *) echo "unknown command: $1"; exit 1 ;;',
+        'esac',
+      ].join('\n')}\n`,
+      'utf8',
+    )
+    chmodSync(executable, 0o755)
+    return executable
+  }
+
+  function isolateConfig(
+    overrides: Partial<{ autoCreate: boolean; syncOnStart: boolean }> = {},
+  ): ExtensionConfig {
+    return {
+      cgc: { executable: 'cgc', timeoutMs: 30_000, versionProbeTimeoutMs: 10_000 },
+      lifecycle: {
+        autoCreate: overrides.autoCreate ?? false,
+        syncOnStart: overrides.syncOnStart ?? true,
+      },
+      worktree: { mode: 'isolate' },
+      proactive: { sessionNote: true, driftSteers: false, resultAnnotations: false },
+      freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
+      output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
+      tools: { cliGap: { enabled: true } },
+    }
+  }
+
+  function makeStubClassifier(state: LifecycleState): GateClassifierLike {
+    return {
+      classify: (cwd: string) => Promise.resolve(mockClassification(cwd, state)),
+      reset: () => {
+        // no-op
+      },
+    }
+  }
+
+  async function waitForLogContaining(log: string, needle: string): Promise<string[]> {
+    for (let i = 0; i < 300; i++) {
+      try {
+        const text = readFileSync(log, 'utf8')
+        if (text.includes(needle)) return text.trim().split('\n')
+      } catch {
+        // Not written yet.
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10))
+    }
+    throw new Error(`cgc invocation log never contained ${needle}`)
+  }
+
+  async function waitForRecordedMap(commonDir: string, cwd: string): Promise<void> {
+    for (let i = 0; i < 300; i++) {
+      try {
+        const file = JSON.parse(readFileSync(join(commonDir, WORKTREE_MAP_FILE), 'utf8')) as {
+          records: { cwd: string }[]
+        }
+        if (file.records.some((record) => record.cwd === cwd)) return
+      } catch {
+        // Not persisted yet.
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10))
+    }
+    throw new Error(`worktree map record for ${cwd} was never persisted`)
+  }
+
+  it('carries --context wt-<id> on every invocation while the mapping identity matches (reuse)', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wt = makeFakeWorktree(commonDir, 'branch-a')
+    const log = join(repo, 'cgc.log')
+    const executable = installFakeCgc(log)
+    // A durable mapping from a previous session.
+    const recorded = new WorktreeMap({ detector: new WorktreeDetector() }).record(wt, 'wt-branch-a')
+    expect(recorded.status).toBe('recorded')
+
+    const runner = new CgcRunner({ executable, defaultTimeoutMs: 10_000 })
+    const gate = new LifecycleGate({
+      runner,
+      config: isolateConfig({ autoCreate: true }),
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      const outcome = await gate.evaluate(wt)
+      expect(outcome.attempted).toBe(true)
+
+      const lines = await waitForLogContaining(log, 'index .')
+      // Automatic indexing for the worktree carries its mapped context; no
+      // creation spawn happens on reuse of a verified mapping.
+      expect(lines).toEqual(['--context wt-branch-a index .'])
+    } finally {
+      gate.reset()
+      await runner.killAll()
+    }
+  })
+
+  it('default mode (off) is zero change: a mapped worktree gets no flag injection', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wt = makeFakeWorktree(commonDir, 'branch-a')
+    const log = join(repo, 'cgc.log')
+    const executable = installFakeCgc(log)
+    expect(
+      new WorktreeMap({ detector: new WorktreeDetector() }).record(wt, 'wt-branch-a').status,
+    ).toBe('recorded')
+
+    const runner = new CgcRunner({ executable, defaultTimeoutMs: 10_000 })
+    const gate = new LifecycleGate({
+      runner,
+      config: {
+        cgc: { executable: 'cgc', timeoutMs: 30_000, versionProbeTimeoutMs: 10_000 },
+        lifecycle: { autoCreate: true, syncOnStart: true },
+        worktree: { mode: 'off' },
+        proactive: { sessionNote: true, driftSteers: false, resultAnnotations: false },
+        freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
+        output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
+        tools: { cliGap: { enabled: true } },
+      },
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      await gate.evaluate(wt)
+      const lines = await waitForLogContaining(log, 'index .')
+      expect(lines).toEqual(['index .'])
+    } finally {
+      gate.reset()
+      await runner.killAll()
+    }
+  })
+
+  it('a worktree with no verified mapping receives no indexing spawns (consent declined)', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wt = makeFakeWorktree(commonDir, 'branch-a')
+    const log = join(repo, 'cgc.log')
+    const executable = installFakeCgc(log)
+
+    const runner = new CgcRunner({ executable, defaultTimeoutMs: 10_000 })
+    const gate = new LifecycleGate({
+      runner,
+      config: isolateConfig({ autoCreate: false }),
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      await gate.evaluate(wt)
+      await settleUntil(gate, wt, 'worktree-isolation')
+      // The declined guidance reached the notice surface.
+      expect(gate.notices().some((n) => n.text.includes('wt-branch-a'))).toBe(true)
+      // Nothing was spawned: no creation (consent closed) and no indexing
+      // against CGC's default context (no verified mapping).
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+      expect(existsSync(log)).toBe(false)
+    } finally {
+      gate.reset()
+      await runner.killAll()
+    }
+  })
+
+  it('fails open on an unreadable map file: no maintenance spawn, no mismatch state, no clobbering (containment)', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wt = makeFakeWorktree(commonDir, 'branch-a')
+    const log = join(repo, 'cgc.log')
+    const executable = installFakeCgc(log)
+    const mapPath = join(commonDir, WORKTREE_MAP_FILE)
+    // An unreadable map must never be trusted, repaired, or retried into a
+    // context name — even with the auto-create consent gate wide open.
+    writeFileSync(mapPath, '{ not json', 'utf8')
+
+    const runner = new CgcRunner({ executable, defaultTimeoutMs: 10_000 })
+    const gate = new LifecycleGate({
+      runner,
+      config: isolateConfig({ autoCreate: true }),
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      await gate.evaluate(wt)
+      // The unreadable map resolves `unmapped`, never `mismatch`: the generic
+      // worktree-isolation action is recorded — NOT the fail-closed
+      // identity-mismatch state, whose once-per-session notice demands
+      // re-consent for a condition the user did not cause.
+      await settleUntil(gate, wt, 'worktree-isolation')
+      expect(gate.notices().some((notice) => notice.text.includes('identity mismatch'))).toBe(false)
+
+      // The block surface is honest: blocked because no mapping CAN be
+      // verified, with no context name leaked from an unreadable record.
+      expect(gate.worktreeBlockFor(wt)).toEqual({
+        blocked: true,
+        status: 'unmapped',
+        contextName: null,
+        reason: expect.stringContaining('unreadable'),
+      })
+
+      // Nothing spawns against CGC's default context: consented creation may
+      // run, but no indexing maintenance follows while the map is unreadable
+      // (the create settles into a refused record — degraded, never a fix).
+      await waitForLogContaining(log, 'context create')
+      expect(gate.snapshot(wt)?.lastAction?.kind).toBe('worktree-isolation')
+      await new Promise<void>((resolve) => setTimeout(resolve, 400))
+      const lines = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []
+      expect(lines.some((line) => line.includes('index .'))).toBe(false)
+
+      // Fail-open containment also means: the unreadable map is left exactly
+      // as found — the extension never clobbers or discards it at the gate
+      // wiring level (the map's own never-clobber guarantee, held end to end).
+      expect(readFileSync(mapPath, 'utf8')).toBe('{ not json')
+    } finally {
+      gate.reset()
+      await runner.killAll()
+    }
+  })
+
+  it('the creation-in-flight window injects nothing and runs no maintenance (creating)', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wt = makeFakeWorktree(commonDir, 'branch-a')
+    const log = join(repo, 'cgc.log')
+    const executable = installFakeCgc(log)
+
+    const runner = new CgcRunner({ executable, defaultTimeoutMs: 10_000 })
+    const gate = new LifecycleGate({
+      runner,
+      config: isolateConfig({ autoCreate: true }),
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      await gate.evaluate(wt)
+      // The consented creation runs WITHOUT the flag: at spawn time no
+      // verified mapping exists (identity, not the derived name, is the
+      // source of truth).
+      const lines = await waitForLogContaining(log, 'context create')
+      expect(lines).toEqual(['context create wt-branch-a'])
+      // Maintenance stays off while the mapping is in flight: at route time
+      // the workspace was still unmapped, so no index spawn happened.
+      expect(lines.some((line) => line.includes('index .'))).toBe(false)
+      // Once CGC confirms, the mapping is persisted (durable) — later
+      // sessions reuse it and every invocation carries --context.
+      await waitForRecordedMap(commonDir, wt)
+    } finally {
+      gate.reset()
+      await runner.killAll()
+    }
+  })
+
+  it('blocks maintenance spawns on identity mismatch (fail closed) until re-consent', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wt = makeFakeWorktree(commonDir, 'branch-a')
+    const log = join(repo, 'cgc.log')
+    const executable = installFakeCgc(log)
+    expect(
+      new WorktreeMap({ detector: new WorktreeDetector() }).record(wt, 'wt-branch-a').status,
+    ).toBe('recorded')
+    // The checkout is re-pointed at a different worktree id: the recorded
+    // identity no longer matches, so the context must not be used.
+    writeFileSync(
+      join(wt, '.git'),
+      `gitdir: ${join(commonDir, 'worktrees', 'branch-a-renamed')}\n`,
+      'utf8',
+    )
+
+    const runner = new CgcRunner({ executable, defaultTimeoutMs: 10_000 })
+    const gate = new LifecycleGate({
+      runner,
+      config: isolateConfig({ autoCreate: true }),
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      await gate.evaluate(wt)
+      // Task 2.3: the mismatch records the DISTINCT identity-mismatch action
+      // kind (not the generic no-mapping block) and surfaces the
+      // identity-mismatch state once on the user-facing notice surface,
+      // naming the blocked context and the fail-closed guarantee.
+      await settleUntil(gate, wt, 'worktree-identity-mismatch')
+      expect(gate.notices().some((notice) => notice.text.includes('wt-branch-a'))).toBe(true)
+      expect(gate.notices().some((notice) => notice.text.includes('identity mismatch'))).toBe(true)
+      expect(gate.notices().some((notice) => notice.text.includes('until you re-consent'))).toBe(
+        true,
+      )
+      // The one-time guarantee: a second evaluation does not re-notify.
+      const first = gate.notices().length
+      await gate.evaluate(wt)
+      expect(gate.notices().length).toBe(first)
+
+      // The block surface commands/tests consume reports the mismatch in
+      // isolate mode and resolves null in off mode.
+      expect(gate.worktreeBlockFor(wt)).toEqual({
+        blocked: true,
+        status: 'mismatch',
+        contextName: 'wt-branch-a',
+        reason: expect.stringContaining('no longer matches'),
+      })
+      expect(gate.worktreeBlockFor(join(repo, 'missing-worktree'))).toEqual({
+        blocked: false,
+        status: 'not-worktree',
+        contextName: null,
+        reason: null,
+      })
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+      expect(existsSync(log)).toBe(false)
+    } finally {
+      gate.reset()
+      await runner.killAll()
+    }
+  })
+
+  it('exposes worktreeBlockFor as a null no-op outside isolate mode (off = zero change)', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wt = makeFakeWorktree(commonDir, 'branch-a')
+    const log = join(repo, 'cgc.log')
+    const executable = installFakeCgc(log)
+    expect(
+      new WorktreeMap({ detector: new WorktreeDetector() }).record(wt, 'wt-branch-a').status,
+    ).toBe('recorded')
+    writeFileSync(
+      join(wt, '.git'),
+      `gitdir: ${join(commonDir, 'worktrees', 'branch-a-renamed')}\n`,
+      'utf8',
+    )
+
+    const runner = new CgcRunner({ executable, defaultTimeoutMs: 10_000 })
+    const gate = new LifecycleGate({
+      runner,
+      config: {
+        cgc: { executable: 'cgc', timeoutMs: 30_000, versionProbeTimeoutMs: 10_000 },
+        lifecycle: { autoCreate: true, syncOnStart: true },
+        worktree: { mode: 'off' },
+        proactive: { sessionNote: true, driftSteers: false, resultAnnotations: false },
+        freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
+        output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
+        tools: { cliGap: { enabled: true } },
+      },
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      await gate.evaluate(wt)
+      // `off` mode: no worktree surface is wired, so every caller sees null
+      // and behaves exactly as before (zero change).
+      expect(gate.worktreeBlockFor(wt)).toBeNull()
+      // Without an active session the surface is also a null no-op.
+      gate.reset()
+      expect(gate.worktreeBlockFor(wt)).toBeNull()
+    } finally {
+      gate.reset()
+      await runner.killAll()
+    }
+  })
+
+  it('surfaces one-time pruned-worktree notices (task 2.4) and deletes nothing', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wtLive = makeFakeWorktree(commonDir, 'branch-a')
+    const wtPruned = makeFakeWorktree(commonDir, 'branch-b')
+    const map = new WorktreeMap({ detector: new WorktreeDetector() })
+    expect(map.record(wtLive, 'wt-branch-a').status).toBe('recorded')
+    expect(map.record(wtPruned, 'wt-branch-b').status).toBe('recorded')
+    // Prune one checkout: the durable mapping record survives; the directory
+    // is gone, so a later session only ever sees a stale record for it.
+    rmSync(wtPruned, { recursive: true, force: true })
+
+    const { gate, handlers } = makeRegisteredGate({
+      config: isolateConfig({ autoCreate: false }),
+    })
+    const sessionStart = handlers.get('session_start') as (event: unknown, ctx: unknown) => unknown
+    const prunedNotices = () =>
+      gate.notices().filter((notice) => notice.text.includes('wt-branch-b'))
+    try {
+      // Session starts inside the survived worktree of the same repository.
+      // The pruned scan is synchronous in the session-start hook, so the
+      // notice is already present once the hook returns.
+      sessionStart({ type: 'session_start' }, { cwd: wtLive, ui: {} })
+      expect(prunedNotices()).toHaveLength(1)
+      expect(prunedNotices()[0]?.text).toContain('wt-branch-b')
+      expect(prunedNotices()[0]?.text).toContain('/cgc_context delete')
+      expect(prunedNotices()[0]?.text).toContain('Nothing was deleted')
+      // The live mapping is not flagged as pruned.
+      expect(gate.notices().some((notice) => notice.text.includes('wt-branch-a'))).toBe(false)
+      // No autonomous deletion: the pruned record is still in the map file.
+      const file = JSON.parse(readFileSync(join(commonDir, WORKTREE_MAP_FILE), 'utf8')) as {
+        records: { cwd: string }[]
+      }
+      expect(file.records.some((record) => record.cwd === wtPruned)).toBe(true)
+
+      // One-time per session: a second session start does not re-notify.
+      sessionStart({ type: 'session_start' }, { cwd: wtLive, ui: {} })
+      await gate.whenEvaluated(wtLive)
+      expect(prunedNotices()).toHaveLength(1)
+
+      // A fresh session re-surfaces the notice while the record stays stale:
+      // reset() discards the old session (and its notice log), so the new
+      // session's log holds exactly the re-emitted notice.
+      gate.reset()
+      sessionStart({ type: 'session_start' }, { cwd: wtLive, ui: {} })
+      expect(prunedNotices()).toHaveLength(1)
+    } finally {
+      gate.reset()
+    }
+  })
+
+  it('isolate mode fails open on a malformed .git pointer: the session proceeds as a non-worktree (containment)', async () => {
+    const repo = makeFakeRepo()
+    const commonDir = join(repo, '.git')
+    const wt = makeFakeWorktree(commonDir, 'branch-a')
+    // The pointer is malformed: detection must degrade to non-worktree —
+    // never a mismatch or an unmapped block — so the session proceeds exactly
+    // as it would in a main checkout (spec: "Detection errors are contained").
+    // Even with the auto-create consent gate wide open, not a single worktree
+    // surface may fire.
+    writeFileSync(join(wt, '.git'), 'not a git pointer\n', 'utf8')
+    const log = join(repo, 'cgc.log')
+    const executable = installFakeCgc(log)
+
+    const runner = new CgcRunner({ executable, defaultTimeoutMs: 10_000 })
+    const gate = new LifecycleGate({
+      runner,
+      config: isolateConfig({ autoCreate: true }),
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      const outcome = await gate.evaluate(wt)
+      expect(outcome.attempted).toBe(true)
+
+      // Normal maintenance runs under CGC's default context resolution: no
+      // --context flag, no creation spawn, no mapping — exactly a main
+      // checkout's behavior.
+      const lines = await waitForLogContaining(log, 'index .')
+      expect(lines).toEqual(['index .'])
+      await settleUntil(gate, wt, 'indexing-settled')
+
+      // No worktree surface fired: no notices of any worktree kind.
+      expect(gate.notices().some((notice) => notice.text.includes('worktree'))).toBe(false)
+
+      // The block surface reports the honest, non-blocking degradation —
+      // never a stale or ambiguous block — and no mapping was persisted.
+      expect(gate.worktreeBlockFor(wt)).toEqual({
+        blocked: false,
+        status: 'not-worktree',
+        contextName: null,
+        reason: null,
+      })
+      expect(existsSync(join(commonDir, WORKTREE_MAP_FILE))).toBe(false)
+    } finally {
+      gate.reset()
+      await runner.killAll()
+    }
+  })
+
+  it('off mode never inspects .git: a malformed pointer stays zero change (default off)', async () => {
+    // `off` wiring constructs no worktree components at all, so even a
+    // malformed pointer file in the session cwd changes nothing: no
+    // detection, no mapping, no block surface, no flag injection — the
+    // default mode guarantee holds under adverse input too.
+    const wt = makeWorkspace(false)
+    writeFileSync(join(wt, '.git'), 'not a git pointer\n', 'utf8')
+
+    const runner = new GateMockRunner()
+    runner.results.set('--version', versionResult())
+    const gate = makeGate(runner, {
+      config: makeConfig({ autoCreate: true }),
+      classifier: makeStubClassifier('unindexed'),
+    })
+    try {
+      await gate.evaluate(wt)
+      await settleUntil(gate, wt, 'indexing-settled')
+
+      expect(gate.worktreeBlockFor(wt)).toBeNull()
+      expect(gate.notices().some((notice) => notice.text.includes('worktree'))).toBe(false)
+      const calls = runner.calls
+      // No context creation and no --context injection anywhere.
+      expect(calls.some((call) => call.args[0] === 'context')).toBe(false)
+      expect(calls.some((call) => call.args.includes('--context'))).toBe(false)
+      // The normal maintenance spawn still ran (zero change, not zero work).
+      expect(calls.some((call) => call.args.join(' ') === 'index .')).toBe(true)
+    } finally {
+      gate.reset()
     }
   })
 })

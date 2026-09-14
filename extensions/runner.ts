@@ -5,7 +5,8 @@
 //   - an explicit `cwd` supplied by the Pi session context (never `process.cwd()`),
 //   - a per-command time budget with termination on expiry,
 //   - AbortSignal cancellation,
-//   - bounded output capture (the most recent bytes are kept per stream),
+//   - bounded output capture (design D2: head+tail retention with an
+//     explicit truncation marker — see output-policy.ts),
 //   - structured result codes, and
 //   - per-workspace in-flight deduplication.
 //
@@ -15,6 +16,7 @@
 // empty cwd), which are programming errors, not cgc failures.
 
 import { type ChildProcess, spawn } from 'node:child_process'
+import { applyOutputPolicy, OUTPUT_POLICY_MAX_BYTES } from './output-policy'
 
 /**
  * Structured outcome codes for a cgc invocation.
@@ -31,6 +33,20 @@ export type CgcResultCode =
   | 'BUSY'
   | 'COMMAND_FAILED'
 
+/**
+ * Synchronous per-workspace `--context` resolution hook (design D2 of
+ * add-cgc-worktree-aware-contexts, task 2.2). Maps a workspace to the CGC
+ * named context every invocation in that workspace must carry
+ * (`--context <name>`), or null for no injection.
+ *
+ * The hook MUST be fail-closed: it returns a name only for a VERIFIED mapping
+ * identity (the session's `WorktreeMap.contextFor`), never a name derived
+ * from unverified state — it is the implementation of isolate-mode context
+ * isolation. A throwing hook degrades to no injection (fail-open on the
+ * runner side, so a broken hook can never break an invocation).
+ */
+export type RunnerContextResolver = (cwd: string) => string | null
+
 export interface CgcRunOptions {
   /** Argument array, passed to the child verbatim (no shell parsing). */
   args: readonly string[]
@@ -40,8 +56,23 @@ export interface CgcRunOptions {
   signal?: AbortSignal
   /** Child environment; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv
-  /** Per-stream capture cap in bytes; defaults to {@link DEFAULT_MAX_OUTPUT_BYTES}. */
+  /**
+   * Per-stream capture cap in bytes; defaults to
+   * {@link DEFAULT_MAX_OUTPUT_BYTES}. The buffer retains the head and tail of
+   * the stream within this cap; the DELIVERED text never exceeds the smaller
+   * of this cap and the output policy budget ({@link OUTPUT_POLICY_MAX_BYTES})
+   * — both ends survive, separated by an explicit truncation marker.
+   */
   maxOutputBytes?: number
+  /**
+   * Optional text written to the child's stdin (followed by EOF) right after
+   * spawn — the escape hatch for documented CLI verbs that print their OWN
+   * confirmation prompt (e.g. `cgc context delete` asks its `[y/N]`). The
+   * caller supplies an answer ONLY after the ADR-0003 consent layer already
+   * granted explicit consent; the runner never prompts or answers on its own.
+   * When omitted the child's stdin stays /dev/null (unchanged behavior).
+   */
+  stdin?: string
 }
 
 export interface CgcCommandResult {
@@ -56,7 +87,10 @@ export interface CgcCommandResult {
   signal: NodeJS.Signals | null
   stdout: string
   stderr: string
-  /** True when a stream hit the capture cap and earlier bytes were dropped. */
+  /**
+   * True when a stream exceeded the capture cap and the retained
+   * head+tail reconstruction is missing middle bytes (design D2).
+   */
   truncated: boolean
   durationMs: number
   argv: string[]
@@ -64,7 +98,12 @@ export interface CgcCommandResult {
   cwd: string
 }
 
-/** Default per-stream output cap: 256 KiB, enough for status output, cheap to hold. */
+/**
+ * Default per-stream capture cap: 256 KiB, enough for status output, cheap
+ * to hold. This is a RAW retention ceiling (memory guard), not the delivered
+ * budget — the output policy's {@link OUTPUT_POLICY_MAX_BYTES} (16 KiB,
+ * design of `output.maxBytes`) is what consumers receive, bounded head+tail.
+ */
 export const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
 
 /** Grace period between SIGTERM and SIGKILL when terminating a child. */
@@ -80,34 +119,99 @@ const LOCK_PATTERN = /\block(ed|ing)\b/i
 const DEDUP_KEY_SEPARATOR = '\u0000'
 const ARG_SEPARATOR = '\u0001'
 
-/** Bounded byte buffer that keeps the most recent bytes (a tail) per stream. */
-class BoundedBuffer {
-  private readonly chunks: Buffer[] = []
-  private total = 0
+/**
+ * Bounded byte buffer keeping the HEAD and TAIL of a stream (design D2 of
+ * add-cgc-output-token-economy): the first and last `maxBytes` are retained
+ * while the true total is tracked (`totalBytes`), so the truncation marker
+ * can state the ORIGINAL size even after middle bytes were dropped. The old
+ * tail-only buffer broke D2 (the head was lost) and lost the totals — this
+ * replaces it as the pipeline's capture stage.
+ *
+ * `truncated` is true exactly when bytes WERE dropped, i.e. the stream
+ * exceeded 2× the cap and the retained head+tail reconstruction is
+ * incomplete; between `maxBytes` and 2× the cap the head and tail exactly
+ * tile the stream, so nothing is lost.
+ *
+ * Spill seam (design D3; task 1.4 wires the session temp directory): an
+ * optional sink receives EVERY chunk as it arrives, so a spill writer sees
+ * the full stream even though the buffer drops its middle — once overflow
+ * has happened the full output can no longer be reconstructed from memory.
+ */
+class HeadTailBuffer {
+  /** Snapshot of the first `maxBytes` (frozen once at the first overflow). */
+  private first: Buffer | null = null
+  /** The most recent bytes (rolling tail, never over `maxBytes`). */
+  private readonly tail: Buffer[] = []
+  private tailBytes = 0
+  /** True once any byte was dropped (`totalBytes` exceeded 2× the cap). */
   truncated = false
+  totalBytes = 0
+  private cachedText: string | null = null
 
-  constructor(private readonly maxBytes: number) {}
+  constructor(
+    private readonly maxBytes: number,
+    private readonly spill?: (chunk: Buffer) => void,
+  ) {}
 
   push(chunk: Buffer): void {
-    this.chunks.push(chunk)
-    this.total += chunk.length
-    while (this.total > this.maxBytes) {
-      const head = this.chunks[0]
-      if (head === undefined) break
-      const overflow = this.total - this.maxBytes
-      if (head.length > overflow) {
-        this.chunks[0] = head.subarray(overflow)
-        this.total -= overflow
+    this.totalBytes += chunk.length
+    this.cachedText = null
+    this.spill?.(chunk)
+
+    if (this.first === null) {
+      // Pre-overflow: accumulate; the tail list holds the whole stream.
+      if (this.tailBytes + chunk.length <= this.maxBytes) {
+        this.tail.push(chunk)
+        this.tailBytes += chunk.length
+        return
+      }
+      // This chunk crosses the cap. Snapshot the first `maxBytes` (the tail
+      // list is the exact stream prefix) plus this chunk's filling part, then
+      // roll the chunk's remainder as the start of the tail.
+      const space = this.maxBytes - this.tailBytes
+      const headFill = chunk.subarray(0, space)
+      this.tail.push(headFill)
+      this.first = Buffer.concat(this.tail)
+      this.tail.splice(0)
+      this.tailBytes = 0
+      const remainder = chunk.subarray(space)
+      if (remainder.length > 0) {
+        this.tail.push(remainder)
+        this.tailBytes = remainder.length
+      }
+      this.trimTail()
+      return
+    }
+
+    // Overflow already happened: the head snapshot is frozen, roll the tail.
+    this.tail.push(chunk)
+    this.tailBytes += chunk.length
+    this.trimTail()
+  }
+
+  /** Drop bytes from the front of the tail to keep it within `maxBytes`. */
+  private trimTail(): void {
+    while (this.tailBytes > this.maxBytes) {
+      const oldest = this.tail[0]
+      if (oldest === undefined) break
+      const overflow = this.tailBytes - this.maxBytes
+      if (oldest.length > overflow) {
+        this.tail[0] = oldest.subarray(overflow)
+        this.tailBytes -= overflow
       } else {
-        this.chunks.shift()
-        this.total -= head.length
+        this.tail.shift()
+        this.tailBytes -= oldest.length
       }
       this.truncated = true
     }
   }
 
+  /** The retained reconstruction: head snapshot (when overflowed) + tail. */
   text(): string {
-    return Buffer.concat(this.chunks).toString('utf8')
+    if (this.cachedText !== null) return this.cachedText
+    const parts = this.first !== null ? [this.first, ...this.tail] : this.tail
+    this.cachedText = Buffer.concat(parts).toString('utf8')
+    return this.cachedText
   }
 }
 
@@ -141,6 +245,15 @@ export interface CgcRunnerOptions {
   executable?: string
   /** Default time budget for invocations that do not pass `timeoutMs`. */
   defaultTimeoutMs?: number
+  /**
+   * Optional per-workspace `--context` injection hook (task 2.2). When it
+   * returns a non-empty name for a workspace, every invocation there gets
+   * `--context <name>` prepended to argv (before the in-flight key is
+   * computed, so deduplication observes the real command). Consulted
+   * synchronously once per `run` call. Per-session state is swapped via
+   * {@link CgcRunner.setContextResolver}.
+   */
+  contextResolver?: RunnerContextResolver
 }
 
 /**
@@ -150,17 +263,28 @@ export interface CgcRunnerOptions {
 export class CgcRunner {
   private readonly executable: string
   private readonly defaultTimeoutMs: number
+  private contextResolver: RunnerContextResolver | null
   private readonly inflight = new Map<string, Promise<CgcCommandResult>>()
   private readonly liveChildren = new Set<LiveChild>()
 
   constructor(options: CgcRunnerOptions = {}) {
     this.executable = options.executable ?? 'cgc'
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30_000
+    this.contextResolver = options.contextResolver ?? null
   }
 
   /** The binary this runner spawns (diagnostic surfaces only). */
   get executablePath(): string {
     return this.executable
+  }
+
+  /**
+   * Swap the per-workspace `--context` resolver (per-session wiring: the
+   * lifecycle gate attaches the session's worktree map on session start and
+   * detaches it on shutdown). Pass null to disable injection. Never throws.
+   */
+  setContextResolver(resolver: RunnerContextResolver | null): void {
+    this.contextResolver = resolver
   }
 
   /**
@@ -184,15 +308,44 @@ export class CgcRunner {
       }
     }
 
-    const key = `${cwd}${DEDUP_KEY_SEPARATOR}${options.args.join(ARG_SEPARATOR)}`
+    // Task 2.2: carry the mapped `--context` flag on every invocation of a
+    // workspace whose mapping identity matches. Injection happens BEFORE the
+    // in-flight key is computed so deduplication observes the real command
+    // (identical injected commands dedup; differently injected ones do not).
+    const args = this.withInjectedContext(cwd, options.args)
+
+    const key = `${cwd}${DEDUP_KEY_SEPARATOR}${args.join(ARG_SEPARATOR)}`
     const existing = this.inflight.get(key)
     if (existing) return existing
 
-    const promise = this.runOnce(cwd, options).finally(() => {
+    const promise = this.runOnce(cwd, { ...options, args }).finally(() => {
       this.inflight.delete(key)
     })
     this.inflight.set(key, promise)
     return promise
+  }
+
+  /**
+   * Prepend `--context <name>` when the session's resolver yields a verified
+   * context name for this workspace. Deliberately fail-open: no resolver, a
+   * throwing resolver, or an empty name leaves argv untouched (`off` mode is
+   * zero change). An explicit caller-supplied context flag (long or short)
+   * always wins and is never stacked — a manual `--context` on the command is
+   * the caller's decision, and cgc takes the last flag verbatim.
+   */
+  private withInjectedContext(cwd: string, args: readonly string[]): string[] {
+    const resolver = this.contextResolver
+    if (resolver === null) return [...args]
+    let contextName: string | null
+    try {
+      contextName = resolver(cwd)
+    } catch {
+      // Fail-open: a throwing resolver must never break an invocation.
+      return [...args]
+    }
+    if (contextName === null || contextName.length === 0) return [...args]
+    if (args.includes('--context') || args.includes('-c')) return [...args]
+    return ['--context', contextName, ...args]
   }
 
   /** Whether any cgc command is currently in flight for the given workspace. */
@@ -253,10 +406,16 @@ export class CgcRunner {
       options.maxOutputBytes && options.maxOutputBytes > 0
         ? options.maxOutputBytes
         : DEFAULT_MAX_OUTPUT_BYTES
+    // The delivered-text budget of the uniform output policy (design D1): the
+    // smaller of the per-invocation capture cap and the policy default
+    // (16 KiB, the design of `output.maxBytes`, plumbed from config by task
+    // 1.2). The marker therefore also fires for any output the policy bound
+    // cuts, not only for capture-cap overflow.
+    const policyBudget = Math.min(maxOutputBytes, OUTPUT_POLICY_MAX_BYTES)
 
     return new Promise((resolve) => {
-      const stdoutBuffer = new BoundedBuffer(maxOutputBytes)
-      const stderrBuffer = new BoundedBuffer(maxOutputBytes)
+      const stdoutBuffer = new HeadTailBuffer(maxOutputBytes)
+      const stderrBuffer = new HeadTailBuffer(maxOutputBytes)
       let settled = false
       let killReason: 'TIMEOUT' | 'CANCELLED' | undefined
       let child: ChildProcess | undefined
@@ -285,8 +444,8 @@ export class CgcRunner {
           message,
           exitCode,
           signal: signalName,
-          stdout: stdoutBuffer.text(),
-          stderr: stderrBuffer.text(),
+          stdout: applyCapturePolicy(stdoutBuffer, policyBudget),
+          stderr: applyCapturePolicy(stderrBuffer, policyBudget),
           truncated: stdoutBuffer.truncated || stderrBuffer.truncated,
           durationMs: Date.now() - startedAt,
           argv,
@@ -305,14 +464,36 @@ export class CgcRunner {
       }, timeoutMs)
 
       try {
+        // `stdin` is the only reason to open the pipe: otherwise the child's
+        // stdin stays /dev/null so an interactive prompt can never hang.
+        const stdinText = options.stdin
+        const stdio = [stdinText !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] as [
+          'pipe' | 'ignore',
+          'pipe',
+          'pipe',
+        ]
         const spawned = spawn(this.executable, argv, {
           cwd,
           env: options.env ?? process.env,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio,
           shell: false,
           windowsHide: true,
         })
         child = spawned
+        if (stdinText !== undefined) {
+          const stdinStream = spawned.stdin
+          if (stdinStream !== null) {
+            try {
+              stdinStream.write(stdinText)
+              // The declared Writable type omits close(); the runtime exposes it.
+              ;(stdinStream as unknown as { close: () => void }).close()
+            } catch {
+              // The child may close its stdin early (e.g. it rejected the verb
+              // without prompting); the close handler below reports the real
+              // outcome and the invocation never fails on a broken pipe.
+            }
+          }
+        }
         entry = {
           child: spawned,
           closed: new Promise<void>((resolveClosed) => {
@@ -382,6 +563,31 @@ export class CgcRunner {
         finish('COMMAND_FAILED', `cgc exited with code ${exitCode ?? 'null'}`, exitCode, signalName)
       })
     })
+  }
+}
+
+/**
+ * Apply the uniform output policy pipeline (design D1) to one captured
+ * stream: strip control sequences → redact secrets → bound with head+tail
+ * and an explicit truncation marker stating the ORIGINAL stream size
+ * (`buffer.totalBytes` — the marker stays honest about material the capture
+ * retention or the bound dropped). Applied here, in the runner, before any
+ * consumer receives results.
+ *
+ * Fail-open (task 1.7 formalizes the policy-error recording): a pipeline
+ * stage defect degrades to best-effort delivery of the retained text — the
+ * invocation itself never fails because a policy stage threw.
+ */
+function applyCapturePolicy(buffer: HeadTailBuffer, budget: number): string {
+  const text = buffer.text()
+  try {
+    return applyOutputPolicy(text, {
+      budget,
+      label: 'command',
+      originalSize: buffer.totalBytes,
+    })
+  } catch {
+    return text
   }
 }
 

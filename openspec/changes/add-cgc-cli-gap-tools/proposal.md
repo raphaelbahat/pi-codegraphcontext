@@ -4,7 +4,7 @@ The CGC MCP server covers the graph query surface but not every maintenance verb
 
 ## What Changes
 
-- Three agent-facing tools (the extension's entire tool surface), registered through Pi's documented tool API and named to avoid any collision with the 25-tool CGC MCP catalog:
+- Three agent-facing tools (the extension's entire tool surface), registered through Pi's documented tool API and named to avoid any collision with the 29-tool CGC MCP catalog:
   - `cgc_bundle_export` — export a portable `.cgc` bundle for a repository (file write; behind the ADR-0003 confirmation layer; never uses destructive `--clear`).
   - `cgc_context` — list / create / delete / set-default named CGC context workspaces via documented CLI verbs (delete behind confirmation; `ALLOW_DB_DELETION`-gated operations remain unreachable).
   - `cgc_doctor` — run CGC diagnostics and return bounded, policy-cleaned output (read-only).

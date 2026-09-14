@@ -29,9 +29,114 @@ export interface LifecycleConfig {
   syncOnStart: boolean
 }
 
+/** Proactive-injection tier config (design D1 of add-cgc-proactive-context-injection). */
+export interface ProactiveConfig {
+  /**
+   * Session-start coverage note (default on): when guidance is ready, inject a
+   * single capped coverage paragraph at most once per session. Opt out by
+   * setting this to false.
+   */
+  sessionNote: boolean
+  /**
+   * Episode-scoped drift steers (default off, opt-in): when guidance is ready
+   * and the session observes a fresh → possibly-stale freshness transition,
+   * inject ONE agent-facing steer naming the staleness and the `/cgc sync`
+   * option; no further steer fires until the episode resolves (design D3).
+   * Opt in by setting this to true.
+   */
+  driftSteers: boolean
+  /**
+   * Result annotations (default off, opt-in): when enabled and the session
+   * observes staleness, append a one-line freshness annotation to outputs
+   * the extension itself produces (slash-command renders); annotations never
+   * alter the output semantics and never touch CGC MCP server results (design
+   * D4). Opt in by setting this to true.
+   */
+  resultAnnotations: boolean
+}
+
+/** Worktree isolation mode (design of add-cgc-worktree-aware-contexts). */
+export type WorktreeMode = 'off' | 'isolate'
+
+export interface WorktreeConfig {
+  /**
+   * Per-worktree CGC context isolation. `off` (default) leaves CGC's own
+   * context resolution unchanged; `isolate` maps each linked worktree to a
+   * dedicated `wt-` named context behind the auto-create consent gate.
+   */
+  mode: WorktreeMode
+}
+
+/** Session freshness drift/sync tier (design D2/D3 of add-cgc-freshness-drift-sync). */
+export interface FreshnessConfig {
+  /**
+   * Run CGC's own watcher as a managed child process (default off, opt-in).
+   * A running watcher holds the embedded database, so it trades away the
+   * user's own CGC MCP server availability for continuous freshness.
+   */
+  watch: boolean
+  /**
+   * Run short-lived incremental indexes on first drift (default on), capped
+   * at `maxSyncsPerSession`; after the cap, staleness is advisory only.
+   */
+  autoSync: boolean
+  /**
+   * Session budget of automatic syncs (default 2): at most this many
+   * incremental indexes run per session before only state + notice updates.
+   */
+  maxSyncsPerSession: number
+}
+
+/** Shared output-policy config (design D1–D5 of add-cgc-output-token-economy). */
+export interface OutputConfig {
+  /**
+   * Delivered-output budget in bytes (default 16384): the shared runner caps
+   * captured output at this size, preserving head+tail with an explicit
+   * truncation marker (design D2).
+   */
+  maxBytes: number
+  /**
+   * Spill truncated output to a session-scoped temp file (default true): the
+   * full output is written under the OS temp directory (never the workspace)
+   * and removed at session teardown (design D3).
+   */
+  spillToTemp: boolean
+  /**
+   * Redact secret-shaped strings in captured output (default true): the
+   * policy replaces credential-style assignments and high-entropy literals
+   * before bounding; disable only for explicit fidelity (design D4).
+   */
+  redactSecrets: boolean
+  /**
+   * CGC GCF output-format passthrough (default false): when enabled the
+   * runner sets `CGC_OUTPUT_FORMAT=gcf` on invocations and relies on CGC's
+   * documented JSON fallback when the format is unavailable (design D5).
+   */
+  gcf: boolean
+}
+
+/** CLI-gap tool surface config (design D1/D2 of add-cgc-cli-gap-tools). */
+export interface ToolsConfig {
+  /**
+   * Register the three CLI-gap tools (`cgc_bundle_export`, `cgc_context`,
+   * `cgc_doctor`) — default on. One flag gates all three; the
+   * `CGC_TOOLS_CLI_GAP_ENABLED` environment override takes precedence over
+   * the config key (design D2). When disabled no CLI-gap tool exists in the
+   * tool catalog at all.
+   */
+  cliGap: {
+    enabled: boolean
+  }
+}
+
 export interface ExtensionConfig {
   cgc: CgcConfig
   lifecycle: LifecycleConfig
+  worktree: WorktreeConfig
+  proactive: ProactiveConfig
+  freshness: FreshnessConfig
+  output: OutputConfig
+  tools: ToolsConfig
 }
 
 export type ConfigSource = 'default' | 'config-file' | 'env'
@@ -42,6 +147,18 @@ export type ConfigKey =
   | 'cgc.versionProbeTimeoutMs'
   | 'lifecycle.autoCreate'
   | 'lifecycle.syncOnStart'
+  | 'worktree.mode'
+  | 'proactive.sessionNote'
+  | 'proactive.driftSteers'
+  | 'proactive.resultAnnotations'
+  | 'freshness.watch'
+  | 'freshness.autoSync'
+  | 'freshness.maxSyncsPerSession'
+  | 'output.maxBytes'
+  | 'output.spillToTemp'
+  | 'output.redactSecrets'
+  | 'output.gcf'
+  | 'tools.cliGap.enabled'
 
 export interface ConfigResult {
   config: ExtensionConfig
@@ -70,6 +187,30 @@ export const DEFAULT_CONFIG: ExtensionConfig = {
     autoCreate: false,
     syncOnStart: true,
   },
+  worktree: {
+    mode: 'off',
+  },
+  proactive: {
+    sessionNote: true,
+    driftSteers: false,
+    resultAnnotations: false,
+  },
+  freshness: {
+    watch: false,
+    autoSync: true,
+    maxSyncsPerSession: 2,
+  },
+  output: {
+    maxBytes: 16_384,
+    spillToTemp: true,
+    redactSecrets: true,
+    gcf: false,
+  },
+  tools: {
+    cliGap: {
+      enabled: true,
+    },
+  },
 }
 
 /** Environment-variable overrides per config key (design D5). */
@@ -79,6 +220,18 @@ export const CONFIG_ENV_VARS: Record<ConfigKey, string> = {
   'cgc.versionProbeTimeoutMs': 'CGC_VERSION_PROBE_TIMEOUT_MS',
   'lifecycle.autoCreate': 'CGC_LIFECYCLE_AUTO_CREATE',
   'lifecycle.syncOnStart': 'CGC_LIFECYCLE_SYNC_ON_START',
+  'worktree.mode': 'CGC_WORKTREE_MODE',
+  'proactive.sessionNote': 'CGC_PROACTIVE_SESSION_NOTE',
+  'proactive.driftSteers': 'CGC_PROACTIVE_DRIFT_STEERS',
+  'proactive.resultAnnotations': 'CGC_PROACTIVE_RESULT_ANNOTATIONS',
+  'freshness.watch': 'CGC_FRESHNESS_WATCH',
+  'freshness.autoSync': 'CGC_FRESHNESS_AUTO_SYNC',
+  'freshness.maxSyncsPerSession': 'CGC_FRESHNESS_MAX_SYNCS_PER_SESSION',
+  'output.maxBytes': 'CGC_OUTPUT_MAX_BYTES',
+  'output.spillToTemp': 'CGC_OUTPUT_SPILL_TO_TEMP',
+  'output.redactSecrets': 'CGC_OUTPUT_REDACT_SECRETS',
+  'output.gcf': 'CGC_OUTPUT_GCF',
+  'tools.cliGap.enabled': 'CGC_TOOLS_CLI_GAP_ENABLED',
 }
 
 const CONFIG_KEYS: readonly ConfigKey[] = Object.keys(CONFIG_ENV_VARS) as ConfigKey[]
@@ -95,11 +248,57 @@ export function parseBoolean(raw: string): boolean | undefined {
   return undefined
 }
 
+/** Lenient worktree-mode parsing shared by env and file layers. */
+export function parseWorktreeMode(raw: string): WorktreeMode | undefined {
+  const value = raw.trim().toLowerCase()
+  if (value === 'off') return 'off'
+  if (value === 'isolate') return 'isolate'
+  return undefined
+}
+
 function parseTimeoutMs(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
   const value = typeof raw === 'string' ? Number(raw) : raw
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     warnings.push(
       `${key}: ignoring invalid timeout ${JSON.stringify(raw)} (expected a positive number of milliseconds)`,
+    )
+    return undefined
+  }
+  return value
+}
+
+/** Parse a byte budget (positive whole number) shared by env and file layers. */
+function parseMaxBytes(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
+  const value = typeof raw === 'string' ? Number(raw) : raw
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value <= 0
+  ) {
+    warnings.push(
+      `${key}: ignoring invalid ${JSON.stringify(raw)} (expected a positive whole number of bytes)`,
+    )
+    return undefined
+  }
+  return value
+}
+
+/** Parse a per-session count (positive integer) shared by env and file layers. */
+function parseMaxSyncsPerSession(
+  raw: unknown,
+  key: ConfigKey,
+  warnings: string[],
+): number | undefined {
+  const value = typeof raw === 'string' ? Number(raw) : raw
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value <= 0
+  ) {
+    warnings.push(
+      `${key}: ignoring invalid ${JSON.stringify(raw)} (expected a positive whole number of syncs)`,
     )
     return undefined
   }
@@ -162,6 +361,73 @@ function readConfigFile(
       }
     } else {
       warnings.push(`${label}: ignoring "lifecycle" section in ${path} (expected an object)`)
+    }
+  }
+
+  const worktree = parsed.worktree
+  if (worktree !== undefined) {
+    if (isPlainObject(worktree)) {
+      if (worktree.mode !== undefined) values['worktree.mode'] = worktree.mode
+    } else {
+      warnings.push(`${label}: ignoring "worktree" section in ${path} (expected an object)`)
+    }
+  }
+
+  const proactive = parsed.proactive
+  if (proactive !== undefined) {
+    if (isPlainObject(proactive)) {
+      if (proactive.sessionNote !== undefined) {
+        values['proactive.sessionNote'] = proactive.sessionNote
+      }
+      if (proactive.driftSteers !== undefined) {
+        values['proactive.driftSteers'] = proactive.driftSteers
+      }
+      if (proactive.resultAnnotations !== undefined) {
+        values['proactive.resultAnnotations'] = proactive.resultAnnotations
+      }
+    } else {
+      warnings.push(`${label}: ignoring "proactive" section in ${path} (expected an object)`)
+    }
+  }
+
+  const freshness = parsed.freshness
+  if (freshness !== undefined) {
+    if (isPlainObject(freshness)) {
+      if (freshness.watch !== undefined) values['freshness.watch'] = freshness.watch
+      if (freshness.autoSync !== undefined) values['freshness.autoSync'] = freshness.autoSync
+      if (freshness.maxSyncsPerSession !== undefined) {
+        values['freshness.maxSyncsPerSession'] = freshness.maxSyncsPerSession
+      }
+    } else {
+      warnings.push(`${label}: ignoring "freshness" section in ${path} (expected an object)`)
+    }
+  }
+
+  const output = parsed.output
+  if (output !== undefined) {
+    if (isPlainObject(output)) {
+      if (output.maxBytes !== undefined) values['output.maxBytes'] = output.maxBytes
+      if (output.spillToTemp !== undefined) values['output.spillToTemp'] = output.spillToTemp
+      if (output.redactSecrets !== undefined) values['output.redactSecrets'] = output.redactSecrets
+      if (output.gcf !== undefined) values['output.gcf'] = output.gcf
+    } else {
+      warnings.push(`${label}: ignoring "output" section in ${path} (expected an object)`)
+    }
+  }
+
+  const tools = parsed.tools
+  if (tools !== undefined) {
+    if (isPlainObject(tools)) {
+      const cliGap = tools.cliGap
+      if (cliGap !== undefined) {
+        if (isPlainObject(cliGap)) {
+          if (cliGap.enabled !== undefined) values['tools.cliGap.enabled'] = cliGap.enabled
+        } else {
+          warnings.push(`${label}: ignoring "cliGap" section in ${path} (expected an object)`)
+        }
+      }
+    } else {
+      warnings.push(`${label}: ignoring "tools" section in ${path} (expected an object)`)
     }
   }
 
@@ -232,6 +498,90 @@ function applyFileLayer(
         }
         break
       }
+      case 'worktree.mode': {
+        const parsed = typeof raw === 'string' ? parseWorktreeMode(raw) : undefined
+        if (parsed !== undefined) {
+          config.worktree.mode = parsed
+          sources[key] = 'config-file'
+        } else {
+          warnings.push(
+            `${label}: ignoring invalid worktree.mode value ${JSON.stringify(raw)} (expected "off" or "isolate")`,
+          )
+        }
+        break
+      }
+      case 'proactive.sessionNote':
+      case 'proactive.driftSteers':
+      case 'proactive.resultAnnotations': {
+        const parsed =
+          typeof raw === 'boolean' ? raw : typeof raw === 'string' ? parseBoolean(raw) : undefined
+        if (parsed !== undefined) {
+          if (key === 'proactive.sessionNote') config.proactive.sessionNote = parsed
+          else if (key === 'proactive.driftSteers') config.proactive.driftSteers = parsed
+          else config.proactive.resultAnnotations = parsed
+          sources[key] = 'config-file'
+        } else {
+          warnings.push(`${label}: ignoring invalid ${key} value ${JSON.stringify(raw)}`)
+        }
+        break
+      }
+      case 'freshness.watch':
+      case 'freshness.autoSync': {
+        const parsed =
+          typeof raw === 'boolean' ? raw : typeof raw === 'string' ? parseBoolean(raw) : undefined
+        if (parsed !== undefined) {
+          if (key === 'freshness.watch') config.freshness.watch = parsed
+          else config.freshness.autoSync = parsed
+          sources[key] = 'config-file'
+        } else {
+          warnings.push(`${label}: ignoring invalid ${key} value ${JSON.stringify(raw)}`)
+        }
+        break
+      }
+      case 'freshness.maxSyncsPerSession': {
+        const maxSyncs = parseMaxSyncsPerSession(raw, key, warnings)
+        if (maxSyncs !== undefined) {
+          config.freshness.maxSyncsPerSession = maxSyncs
+          sources[key] = 'config-file'
+        }
+        break
+      }
+      case 'output.maxBytes': {
+        const maxBytes = parseMaxBytes(raw, key, warnings)
+        if (maxBytes !== undefined) {
+          config.output.maxBytes = maxBytes
+          sources[key] = 'config-file'
+        }
+        break
+      }
+      case 'output.spillToTemp':
+      case 'output.redactSecrets':
+      case 'output.gcf': {
+        const parsed =
+          typeof raw === 'boolean' ? raw : typeof raw === 'string' ? parseBoolean(raw) : undefined
+        if (parsed !== undefined) {
+          if (key === 'output.spillToTemp') config.output.spillToTemp = parsed
+          else if (key === 'output.redactSecrets') config.output.redactSecrets = parsed
+          else config.output.gcf = parsed
+          sources[key] = 'config-file'
+        } else {
+          warnings.push(`${label}: ignoring invalid ${key} value ${JSON.stringify(raw)}`)
+        }
+        break
+      }
+      case 'tools.cliGap.enabled': {
+        const parsed =
+          typeof raw === 'boolean' ? raw : typeof raw === 'string' ? parseBoolean(raw) : undefined
+        if (parsed !== undefined) {
+          config.tools.cliGap.enabled = parsed
+          sources[key] = 'config-file'
+        } else {
+          warnings.push(
+            `${label}: ignoring invalid tools.cliGap.enabled value ${JSON.stringify(raw)}`,
+          )
+        }
+        break
+      }
     }
   }
 }
@@ -265,15 +615,62 @@ function applyEnvLayer(
         break
       }
       case 'lifecycle.autoCreate':
-      case 'lifecycle.syncOnStart': {
+      case 'lifecycle.syncOnStart':
+      case 'proactive.sessionNote':
+      case 'proactive.driftSteers':
+      case 'proactive.resultAnnotations':
+      case 'freshness.watch':
+      case 'freshness.autoSync':
+      case 'output.spillToTemp':
+      case 'output.redactSecrets':
+      case 'output.gcf':
+      case 'tools.cliGap.enabled': {
         const parsed = parseBoolean(raw)
         if (parsed !== undefined) {
           if (key === 'lifecycle.autoCreate') config.lifecycle.autoCreate = parsed
-          else config.lifecycle.syncOnStart = parsed
+          else if (key === 'lifecycle.syncOnStart') config.lifecycle.syncOnStart = parsed
+          else if (key === 'proactive.sessionNote') config.proactive.sessionNote = parsed
+          else if (key === 'proactive.driftSteers') config.proactive.driftSteers = parsed
+          else if (key === 'proactive.resultAnnotations')
+            config.proactive.resultAnnotations = parsed
+          else if (key === 'freshness.watch') config.freshness.watch = parsed
+          else if (key === 'freshness.autoSync') config.freshness.autoSync = parsed
+          else if (key === 'output.spillToTemp') config.output.spillToTemp = parsed
+          else if (key === 'output.redactSecrets') config.output.redactSecrets = parsed
+          else if (key === 'tools.cliGap.enabled') config.tools.cliGap.enabled = parsed
+          else config.output.gcf = parsed
           sources[key] = 'env'
         } else {
           warnings.push(
             `${key}: ignoring invalid ${name} value ${JSON.stringify(raw)} (expected 1/true/yes/on or 0/false/no/off)`,
+          )
+        }
+        break
+      }
+      case 'freshness.maxSyncsPerSession': {
+        const maxSyncs = parseMaxSyncsPerSession(raw, key, warnings)
+        if (maxSyncs !== undefined) {
+          config.freshness.maxSyncsPerSession = maxSyncs
+          sources[key] = 'env'
+        }
+        break
+      }
+      case 'output.maxBytes': {
+        const maxBytes = parseMaxBytes(raw, key, warnings)
+        if (maxBytes !== undefined) {
+          config.output.maxBytes = maxBytes
+          sources[key] = 'env'
+        }
+        break
+      }
+      case 'worktree.mode': {
+        const parsed = parseWorktreeMode(raw)
+        if (parsed !== undefined) {
+          config.worktree.mode = parsed
+          sources[key] = 'env'
+        } else {
+          warnings.push(
+            `${key}: ignoring invalid ${name} value ${JSON.stringify(raw)} (expected "off" or "isolate")`,
           )
         }
         break

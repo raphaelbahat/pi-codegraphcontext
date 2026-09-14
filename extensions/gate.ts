@@ -57,9 +57,21 @@ import type { ExtensionConfig } from './config'
 import { type CorruptNotice, CorruptPath } from './corrupt'
 import { DriftPath } from './drift'
 import { type LifecycleSnapshot, LifecycleStateStore } from './lifecycle-state'
-import type { CgcRunner } from './runner'
+import type { CgcRunner, RunnerContextResolver } from './runner'
 import { type UnindexedNotice, UnindexedPath } from './unindexed'
 import { type WorkspaceDetector, WorkspaceDetector as WorkspaceDetectorImpl } from './workspace'
+import {
+  buildWorktreeIdentityMismatchNotice,
+  buildWorktreePrunedNotice,
+  repoCommonDirOf,
+  WorktreeDetector,
+  type WorktreeIsolateNotice,
+  type WorktreeIsolationBlock,
+  WorktreeIsolator,
+  WorktreeMap,
+  type WorktreeMapResolution,
+  worktreeIsolationBlockOf,
+} from './worktree'
 
 /**
  * The retry ledger's work key for a full gate evaluation (the one retryable
@@ -189,12 +201,44 @@ interface GateSession {
   failedEvaluations: Map<string, { at: number; detail: string }>
   /** Workspaces already given the one-time unavailable notice. */
   unavailableNotified: Set<string>
+  /** Per-session worktree detector (isolate mode only; task 2.2 wiring). */
+  worktreeDetector: WorktreeDetector | undefined
+  /** Per-session worktree map; the shared runner's `--context` resolver reads it. */
+  worktreeMap: WorktreeMap | undefined
+  /** Per-session isolate-mode mapping flow (consent-gated background creation). */
+  isolator: WorktreeIsolator | undefined
+  /**
+   * Workspaces already given the one-time identity-mismatch notice (task
+   * 2.3): a recorded mapping whose identity cannot be verified (different
+   * repository, missing worktree pointer, recreated context) is surfaced
+   * exactly once per session — further blocked evaluations only record the
+   * action, they do not re-notify.
+   */
+  mismatchNotified: Set<string>
+  /**
+   * Orphaned contexts already given the one-time stale-worktree notice
+   * (task 2.4): a pruned mapping (worktree checkout no longer exists) is
+   * surfaced exactly once per session; the extension never deletes
+   * registrations or database files on its own.
+   */
+  prunedNotified: Set<string>
+  /** True while the shared runner's resolver points at THIS session's map. */
+  contextResolverAttached: boolean
   /** The `ui.notify` captured from the most recent session-start context. */
   activeNotify: GateNoticeSink | undefined
   /** In-flight evaluations, keyed by workspace cwd. */
   activeEvaluations: Map<string, Promise<GateEvaluationOutcome>>
   /** Last evaluation outcome per workspace (for `whenEvaluated`). */
   lastOutcomes: Map<string, GateEvaluationOutcome>
+  /**
+   * The cached classification per workspace, retained as the zero-spawn
+   * source for the proactive coverage note (task 1.3): the note renders from
+   * this already-captured data — never a re-probe (ADR 0001). Set on
+   * successful evaluations; a failed re-evaluation leaves the last known
+   * classification in place (the note states its snapshot time, so staleness
+   * stays visible).
+   */
+  lastClassifications: Map<string, LifecycleClassification>
 }
 
 /**
@@ -291,15 +335,28 @@ export class LifecycleGate {
     }
   }
 
-  /**
-   * Resolves when the in-flight evaluation for the workspace settles (or with
-   * the last completed outcome). Null when the workspace was never evaluated.
-   */
+  /** Snapshot of the last evaluation outcome for a workspace (null if none). */
   whenEvaluated(cwd: string): Promise<GateEvaluationOutcome | null> {
     const session = this.ensureSession()
     return (
       session.activeEvaluations.get(cwd) ?? Promise.resolve(session.lastOutcomes.get(cwd) ?? null)
     )
+  }
+
+  /**
+   * The cached lifecycle classification for a workspace — the zero-spawn
+   * source the proactive coverage note (task 1.3) consumes through
+   * `coverageNoteSourceFrom`. Null when the workspace was never successfully
+   * evaluated this session (evaluation still in flight, failed, or no gate
+   * session) — the injector then defers to a later turn. Never throws
+   * (fail-open).
+   */
+  lastClassification(cwd: string): LifecycleClassification | null {
+    try {
+      return this.session?.lastClassifications.get(cwd) ?? null
+    } catch {
+      return null
+    }
   }
 
   /** Reset all per-session state (session shutdown / fresh session). */
@@ -352,6 +409,41 @@ export class LifecycleGate {
     } catch {
       // Fail-open.
     }
+    // Detach the `--context` resolver from the shared runner when it points
+    // at this session's map, and clear the per-session worktree state so no
+    // stale mapping decision leaks into the next session (task 2.2).
+    if (session.contextResolverAttached) {
+      try {
+        const runner: { setContextResolver?: (r: RunnerContextResolver | null) => void } =
+          this.runner
+        if (typeof runner.setContextResolver === 'function') {
+          runner.setContextResolver(null)
+        }
+      } catch {
+        // Fail-open.
+      }
+    }
+    try {
+      session.worktreeDetector?.reset()
+    } catch {
+      // Fail-open.
+    }
+    try {
+      session.worktreeMap?.reset()
+    } catch {
+      // Fail-open.
+    }
+    try {
+      session.isolator?.reset()
+    } catch {
+      // Fail-open.
+    }
+    try {
+      session.mismatchNotified.clear()
+      session.prunedNotified.clear()
+    } catch {
+      // Fail-open.
+    }
   }
 
   /**
@@ -395,6 +487,9 @@ export class LifecycleGate {
       const cwd = session.detector.resolveSessionCwd(sessionCwd)
 
       this.kickOff(session, cwd)
+      // Task 2.4: once per session, surface one-time notices for pruned
+      // mappings of this repository (spawn-free and fail-open).
+      this.surfacePrunedWorktreeNotices(session, cwd)
     } catch {
       // Fail-open: a session_start hook body must never throw; the agent
       // loop is the point of the guarantee.
@@ -466,12 +561,24 @@ export class LifecycleGate {
     }
 
     try {
+      // Task 2.2: fire the isolate-mode mapping flow once (consent-gated,
+      // background, never awaited — design D3). Non-worktrees and `off` mode
+      // make this a no-op; a declined or in-flight creation leaves the
+      // workspace unmapped, which the route() guard below refuses to
+      // maintenance-spawn.
+      session.isolator?.ensureMapping(cwd)
       const classification = await session.classifier.classify(cwd)
       // The classifier never throws, but a rethrow here would mean an
       // unexpected internal defect — the catch below still owns it.
       this.route(session, classification)
       session.evaluated.add(cwd)
       session.failedEvaluations.delete(cwd)
+      // Retain the cached classification: the proactive coverage note renders
+      // from it with zero spawns (the probes already ran for readiness and
+      // this session's data is the note's snapshot). Recorded only on
+      // success — a failure path leaves the previous value (if any), which
+      // the note's snapshot timestamp keeps honest.
+      session.lastClassifications.set(cwd, classification)
 
       const outcome: GateEvaluationOutcome = {
         cwd,
@@ -526,6 +633,27 @@ export class LifecycleGate {
       // Fail-open: state recording must never break the routing.
     }
 
+    const worktreeMap = session.worktreeMap
+    // Task 2.2/2.3 (isolate mode): a linked worktree whose mapping identity is
+    // NOT verified must not receive maintenance SPAWNS — indexing, syncing,
+    // and rebuilding would run against CGC's default context resolution and
+    // break isolation (spec: "no extension indexing or syncing runs for that
+    // worktree" until a mapping exists). Non-worktrees (main checkouts) and
+    // `off` mode are unaffected; the runner-level resolver independently
+    // guarantees any invocation that DOES run carries the verified
+    // `--context` flag. A resolve `mismatch` (different repository, missing
+    // worktree pointer, recreated context) is the fail-closed identity block
+    // D3 requires: the maintenance surface is refused for that workspace and
+    // the user-facing identity-mismatch state is surfaced once per session
+    // (blockWorktreeMaintenance). `unmapped` (consent declined, creation in
+    // flight, corrupt map) is blocked the same way but without the mismatch
+    // state — it is the ordinary "no verified mapping yet" condition.
+    const worktreeResolution = worktreeMap !== undefined ? worktreeMap.resolve(cwd) : null
+    const worktreeIsolationBlocked =
+      worktreeResolution !== null &&
+      worktreeResolution.status !== 'not-worktree' &&
+      worktreeResolution.status !== 'match'
+
     switch (state) {
       case 'unavailable': {
         // One-time notice per workspace per session; nothing is spawned and
@@ -551,6 +679,10 @@ export class LifecycleGate {
         break
       }
       case 'unindexed': {
+        if (worktreeIsolationBlocked) {
+          this.blockWorktreeMaintenance(session, cwd, worktreeResolution, 'indexing')
+          break
+        }
         let outcome: ReturnType<UnindexedPath['handle']>
         try {
           outcome = session.unindexed.handle(cwd)
@@ -617,6 +749,10 @@ export class LifecycleGate {
         break
       }
       case 'drift': {
+        if (worktreeIsolationBlocked) {
+          this.blockWorktreeMaintenance(session, cwd, worktreeResolution, 'syncing')
+          break
+        }
         const outcome = session.drift.handle(cwd)
         switch (outcome.action) {
           case 'syncing': {
@@ -665,6 +801,10 @@ export class LifecycleGate {
         break
       }
       case 'corrupt': {
+        if (worktreeIsolationBlocked) {
+          this.blockWorktreeMaintenance(session, cwd, worktreeResolution, 'rebuild')
+          break
+        }
         const outcome = session.corrupt.handle(cwd, classification.reason)
         if (outcome.action === 'notified') {
           try {
@@ -729,6 +869,100 @@ export class LifecycleGate {
         }
         break
       }
+    }
+  }
+
+  /**
+   * The fail-closed worktree maintenance block (task 2.3, D3): a workspace
+   * whose mapped context identity cannot be verified gets NO maintenance
+   * spawn from the gate — indexing, syncing, or rebuild would silently fall
+   * into CGC's default context resolution. Records the action with the
+   * concrete resolution reason and surfaces the user-facing identity-mismatch
+   * state exactly once per session for a genuine `mismatch` (different
+   * repository, missing worktree pointer, recreated context). `unmapped`
+   * workspaces (consent declined, creation in flight, corrupt map) record the
+   * generic `worktree-isolation` action without the mismatch notice. Never
+   * throws; the gate stays fail-open.
+   */
+  private blockWorktreeMaintenance(
+    session: GateSession,
+    cwd: string,
+    resolution: WorktreeMapResolution | null,
+    activity: 'indexing' | 'syncing' | 'rebuild',
+  ): void {
+    const isMismatch = resolution?.status === 'mismatch'
+    try {
+      session.store.recordAction({
+        kind: isMismatch ? 'worktree-identity-mismatch' : 'worktree-isolation',
+        cwd,
+        ok: null,
+        detail: isMismatch
+          ? `identity mismatch: ${resolution?.reason ?? 'recorded identity does not match the live worktree'}; no ${activity} runs against the mapped context until re-consent`
+          : `isolate mode: no verified mapping for this worktree; no ${activity} runs until it is mapped`,
+      })
+    } catch {
+      // Fail-open.
+    }
+    if (!isMismatch) return
+    // One-time user-facing surfacing per workspace per session (further
+    // blocked evaluations of the same workspace only record the action).
+    if (session.mismatchNotified.has(cwd)) return
+    session.mismatchNotified.add(cwd)
+    this.forwardNotice(
+      session,
+      'error',
+      buildWorktreeIdentityMismatchNotice(cwd, resolution?.contextName, resolution?.reason),
+    )
+  }
+
+  /**
+   * Task 2.4's stale-worktree surface (design D4): verify every persisted
+   * mapping of the session's repository and surface a one-time notice for
+   * each whose worktree checkout no longer exists on disk (pruned), naming
+   * the orphaned context and the user-driven cleanup command. The extension
+   * never deletes registrations or database files — the stale record stays
+   * in the map file, untouched, and can never resolve to a live identity
+   * again. Runs once per session (isolate mode only), deduplicating on the
+   * orphaned context name; a later session re-surfaces only while the
+   * record is still stale. Never throws; the gate stays fail-open.
+   */
+  private surfacePrunedWorktreeNotices(session: GateSession, cwd: string): void {
+    if (session.worktreeMap === undefined) return
+    try {
+      const commonDir = repoCommonDirOf(cwd)
+      if (commonDir === null) return
+      for (const verification of session.worktreeMap.verifyCommonDir(commonDir)) {
+        if (verification.kind !== 'missing') continue
+        const name = verification.record.contextName
+        if (session.prunedNotified.has(name)) continue
+        session.prunedNotified.add(name)
+        this.forwardNotice(
+          session,
+          'warning',
+          buildWorktreePrunedNotice(verification.record, verification),
+        )
+      }
+    } catch {
+      // Fail-open: a broken pruned scan must never break the session.
+    }
+  }
+
+  /**
+   * Task 2.3's fail-closed tool-use surface: resolve the current worktree
+   * isolation block for a workspace. Null when worktree isolation is not
+   * wired for the current session (`off` mode, or no session yet) — callers
+   * then behave exactly as before. When `blocked` is true the workspace's
+   * mapped context must not be used by ANY extension surface; the `reason`
+   * names the fail-closed condition for the surfaced notice. Never throws.
+   */
+  worktreeBlockFor(cwd: string): WorktreeIsolationBlock | null {
+    try {
+      const session = this.session
+      if (session === undefined || session.worktreeMap === undefined) return null
+      return worktreeIsolationBlockOf(session.worktreeMap.resolve(cwd))
+    } catch {
+      // Fail-open: a broken block surface must never break a command.
+      return null
     }
   }
 
@@ -853,12 +1087,61 @@ export class LifecycleGate {
       evaluated: new Set(),
       failedEvaluations: new Map(),
       unavailableNotified: new Set(),
+      worktreeDetector: undefined,
+      worktreeMap: undefined,
+      isolator: undefined,
+      mismatchNotified: new Set(),
+      prunedNotified: new Set(),
+      contextResolverAttached: false,
       activeNotify: undefined,
       activeEvaluations: new Map(),
       lastOutcomes: new Map(),
+      lastClassifications: new Map(),
     }
     this.session = session
+    this.attachWorktreeIsolation(session)
     return session
+  }
+
+  /**
+   * Task 2.2: wire the per-session worktree components and point the shared
+   * runner's `--context` resolver at this session's map, but only in
+   * `isolate` mode — `off` (the default) constructs nothing and changes
+   * nothing. The isolator reuses the lifecycle's auto-create consent gate
+   * (config `lifecycle.autoCreate`); its notices route through the same
+   * session notice surface. Fail-open: a broken worktree wiring must never
+   * break the session.
+   */
+  private attachWorktreeIsolation(session: GateSession): void {
+    if (this.config.worktree.mode !== 'isolate') return
+    try {
+      const detector = new WorktreeDetector()
+      const map = new WorktreeMap({ detector })
+      session.worktreeDetector = detector
+      session.worktreeMap = map
+      session.isolator = new WorktreeIsolator({
+        runner: this.runner,
+        detector,
+        map,
+        autoCreate: this.config.lifecycle.autoCreate,
+        budget: session.budget,
+        onNotice: (notice: WorktreeIsolateNotice) =>
+          this.forwardNotice(session, noticeTypeFor(notice.kind), notice.text),
+      })
+      // The shared runner spawns for every surface (gate paths, slash
+      // commands, probes); pointing its resolver at this session's map is
+      // what carries `--context wt-<id>` on every invocation while the
+      // mapping identity matches. `setContextResolver` may be absent on
+      // structural runner stand-ins in tests — then injection simply stays
+      // off and zero behavior changes.
+      const runner: { setContextResolver?: (r: RunnerContextResolver | null) => void } = this.runner
+      if (typeof runner.setContextResolver === 'function') {
+        runner.setContextResolver((cwd: string) => map.contextFor(cwd))
+        session.contextResolverAttached = true
+      }
+    } catch {
+      // Fail-open: worktree wiring must never break the session.
+    }
   }
 
   private lastState(session: GateSession, cwd: string): LifecycleState {
@@ -870,9 +1153,17 @@ export class LifecycleGate {
   }
 }
 
-/** Notice type by path kind: informational creation messages vs warnings. */
+/**
+ * Notice type by path kind: informational creation messages vs warnings.
+ * Worktree isolate notices (task 2.2) map as: creation start is info, a
+ * collision (surplus/unadoptable context) is an error, everything else
+ * (declined consent, degraded creation) is a warning.
+ */
 function noticeTypeFor(kind: string): GateNoticeType {
-  return kind === 'unindexed' || kind === 'indexing-started' ? 'info' : 'warning'
+  if (kind === 'unindexed' || kind === 'indexing-started' || kind === 'worktree-creating') {
+    return 'info'
+  }
+  return kind === 'worktree-collision' ? 'error' : 'warning'
 }
 
 /** The one-time unavailable notice: what is missing and every way to fix it. */

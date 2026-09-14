@@ -1,7 +1,7 @@
 ## 1. Policy pipeline in the shared runner
 
-- [ ] 1.1 Restructure runner capture into the pipeline: strip control sequences → redact secrets → bound with head+tail (+spill), applied uniformly before any consumer receives results.
-- [ ] 1.2 Implement the config keys `output.maxBytes` (default 16384), `output.spillToTemp` (default true), `output.redactSecrets` (default true), `output.gcf` (default false), each with environment-variable overrides.
+- [x] 1.1 Restructure runner capture into the pipeline: strip control sequences → redact secrets → bound with head+tail (+spill), applied uniformly before any consumer receives results.
+- [x] 1.2 Implement the config keys `output.maxBytes` (default 16384), `output.spillToTemp` (default true), `output.redactSecrets` (default true), `output.gcf` (default false), each with environment-variable overrides.
 - [ ] 1.3 Implement the truncation marker: explicit, stating the original output size and (when spill is enabled) the spill file path.
 - [ ] 1.4 Implement spill-to-file: session-scoped directory under the OS temp location (never the workspace), restrictive permissions where supported, path named in the marker, removal wired into all session teardown paths.
 - [ ] 1.5 Implement conservative pattern-based secret redaction (credential-style assignments, high-entropy literals) applied before bounding, with the `output.redactSecrets` opt-out.

@@ -17,8 +17,10 @@
 // (`handler: async (args, ctx) => …` plus optional `getArgumentCompletions`).
 //
 // Task 1.1 owns registration and dispatch; task 1.2 implements the status
-// renderer; task 1.3 factors the shared output-hygiene renderer below that
-// every command's rendered text routes through — status, doctor, and report.
+// renderer; task 1.3 factors the shared output-hygiene renderer that every
+// command's rendered text routes through — status, doctor, and report (the
+// hygiene stages now live in output-policy.ts; add-cgc-output-token-economy
+// task 1.1 moved them so the runner applies one uniform pipeline).
 // The consent layer (2.1), the index command (2.2), the sync command (2.3),
 // and the doctor/report commands (2.4) are implemented below. The surface registers NO
 // agent tools (ADR 0001 — the CGC MCP server stays the only query engine) and
@@ -37,6 +39,8 @@ import { DEFAULT_SYNC_ARGS } from './drift'
 import type { LifecycleActionInput, LifecycleSnapshot } from './lifecycle-state'
 import type { CgcCommandResult, CgcRunner } from './runner'
 import { isWorkspaceIndexed } from './workspace'
+import type { WorktreeIsolationBlock } from './worktree'
+import { buildWorktreeIdentityMismatchNotice } from './worktree'
 
 /** The registered pi command name — invoked as `/cgc …`. */
 export const CGC_COMMAND_NAME = 'cgc'
@@ -160,6 +164,27 @@ export interface CgcCommandDependencies {
    * the command still runs and notifies, but records no state (fail-open).
    */
   recordAction?: (input: LifecycleActionInput) => unknown
+  /**
+   * Task 2.3's fail-closed worktree isolation surface (wired from the gate
+   * in isolate mode; null result / absent field = `off` mode = zero change):
+   * when the returned block is `blocked`, the spawning verbs notify with the
+   * fail-closed reason and run NOTHING — without a verified `--context`, a
+   * spawn would silently fall back to CGC's default context resolution and
+   * write the worktree's graph into the wrong place (D3).
+   */
+  worktreeBlock?: (cwd: string) => WorktreeIsolationBlock | null
+  /**
+   * Task 2.2 result-annotation seam (add-cgc-proactive-context-injection):
+   * when present, every extension-owned command notification is routed
+   * through this decorator, which MAY append a one-line freshness annotation
+   * to the text (opt-in `proactive.resultAnnotations`, default off). The
+   * decorator MUST return the input unchanged when nothing should be
+   * annotated (disabled, fresh, not ready, freshness capability absent) —
+   * output semantics are untouched. CGC MCP server results are never routed
+   * through this seam: it only sees text this extension itself produces.
+   * Absent → no decoration (zero change — the default).
+   */
+  annotateResult?: (text: string) => string
 }
 
 /** One rendered status report: everything {@link renderStatusText} needs. */
@@ -175,95 +200,25 @@ export interface CgcStatusView {
 }
 
 // ---------------------------------------------------------------------------
-// Shared output-hygiene renderer (task 1.3)
+// Shared output-hygiene renderer (task 1.3 / add-cgc-output-token-economy 1.1)
 // ---------------------------------------------------------------------------
 
-/**
- * Size budget for rendered command output (head+tail bounding, design D4).
- * Every command's rendered text — status, doctor, report — passes through the
- * same cap, so pathological output can never flood the session transcript.
- */
-export const OUTPUT_TEXT_BUDGET = 4096
+// Task 1.1 (add-cgc-output-token-economy) moved the renderer's hygiene stages
+// into the shared policy module (output-policy.ts) so the RUNNER applies one
+// uniform pipeline — strip → redact → bound head+tail — before any consumer
+// receives results. This surface re-exports the renderer conveniences so the
+// command renderers keep working unchanged; the per-surface bounding is
+// retired by task 2.1, which consumes the runner's policy output directly.
+import { renderCommandText } from './output-policy'
 
-/**
- * Control/ANSI-escape stripping for rendered text (pre-ADR-0005 discipline:
- * rendered output embeds state detail strings and raw cgc command output, so
- * defense in depth keeps any escape sequence out of the session transcript).
- * Tab/newline/carriage return are preserved — they are layout, not escapes.
- *
- * Task 1.3 widens the status-local pass (task 1.2) into the shared rule and
- * also strips standalone C1 controls (U+0080–U+009F, including the
- * one-character CSI U+009B): a control byte never survives into a transcript,
- * even without its ESC introducer.
- */
-// Built with `new RegExp` on purpose: this pattern exists to match control
-// bytes, so a regex literal containing control-character escapes would trip
-// biome's `noControlCharactersInRegex`; string escapes sidestep the false
-// positive while keeping the exact same pattern.
-const ESC_CHAR = '\\x1b'
-const CONTROL_SEQUENCE_PATTERN = new RegExp(
-  `${ESC_CHAR}(?:\\[[0-9;?]*[ -/]*[@-~]|\\][^\\x07${ESC_CHAR}]*(?:\\x07|${ESC_CHAR}\\\\)|[()#][0-9A-Za-z]|[\\x2d-\\x5f])|[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]`,
-  'g',
-)
-
-// Standalone C1 controls (U+0080–U+009F, e.g. the one-character CSI U+009B)
-// are stripped as well (task 1.3): a control byte never survives into a
-// transcript, even without its ESC introducer. Built from a string (like
-// CONTROL_SEQUENCE_PATTERN) so biome's `noControlCharactersInRegex` sees no
-// control bytes in a regex literal.
-const C1_CONTROL_PATTERN = /[\u0080-\u009f]/g
-
-/** Strip control sequences and ANSI escapes from text (see pattern doc). */
-export function stripControlSequences(text: string): string {
-  return text.replace(CONTROL_SEQUENCE_PATTERN, '').replace(C1_CONTROL_PATTERN, '')
-}
-
-/** Explicit truncation marker naming the original size (design D4). */
-export function truncationMarker(originalLength: number, label = 'command'): string {
-  return `\n… [cgc ${label} output truncated, original ${originalLength} chars]`
-}
-
-/** Options controlling the shared size-bound (design D4). */
-export interface CgcOutputBoundOptions {
-  /**
-   * Size cap in characters. Defaults to {@link OUTPUT_TEXT_BUDGET} — the
-   * shared cap every command renders under.
-   */
-  budget?: number
-  /**
-   * Command name embedded in the truncation marker (e.g. "status" renders
-   * "cgc status output truncated …"). Defaults to "command".
-   */
-  label?: string
-}
-
-/**
- * Bound rendered text to a budget, preserving head and tail with an explicit
- * truncation marker (design D4: size-bounded render with head+tail
- * preservation). Command output is generated and short in the common case, so
- * this is a fail-safe net for pathological embedded detail strings and raw
- * cgc output, not a hot path. When even the marker cannot fit the budget the
- * marker alone is returned — the truncation contract still holds.
- */
-export function boundText(text: string, options: CgcOutputBoundOptions = {}): string {
-  const budget = options.budget ?? OUTPUT_TEXT_BUDGET
-  if (text.length <= budget) return text
-  const marker = truncationMarker(text.length, options.label ?? 'command')
-  if (budget < marker.length) return marker
-  const headLength = Math.floor((budget - marker.length) / 2)
-  return `${text.slice(0, headLength)}${marker}${text.slice(text.length - (budget - marker.length - headLength))}`
-}
-
-/**
- * The shared output-hygiene pipeline (design D4): strip control sequences,
- * then size-bound with head+tail preservation and an explicit truncation
- * marker. Every command's rendered output routes through this one function —
- * the status renderer consumes it directly, and doctor/report (task 2.4) feed
- * raw `cgc` command output through it before rendering.
- */
-export function renderCommandText(text: string, options: CgcOutputBoundOptions = {}): string {
-  return boundText(stripControlSequences(text), options)
-}
+export type { CgcOutputBoundOptions } from './output-policy'
+export {
+  boundText,
+  OUTPUT_TEXT_BUDGET,
+  renderCommandText,
+  stripControlSequences,
+  truncationMarker,
+} from './output-policy'
 
 /** Human label for a lifecycle state; null renders as unavailable (convention). */
 export function lifecycleStateLabel(state: LifecycleSnapshot['state']): string {
@@ -557,6 +512,76 @@ function notify(
   } catch {
     // Fail-open: a throwing notify sink must never break a command handler.
   }
+}
+
+/**
+ * The command-surface notice for a worktree with no VERIFIED mapping
+ * (unmapped in isolate mode — consent declined, creation in flight, or an
+ * unreadable map): a spawn would lose its `--context` and silently fall into
+ * CGC's default context resolution, breaking isolation (D3).
+ */
+export function buildWorktreeUnverifiedBlockNotice(
+  cwd: string,
+  verb: string,
+  reason: string | null,
+): string {
+  const lines = [
+    `cgc ${verb}: worktree isolation (worktree.mode=isolate) has no verified mapping for ${cwd} — nothing was run.`,
+  ]
+  if (reason !== null && reason.length > 0) {
+    lines.push(`Reason: ${reason}`)
+  }
+  lines.push(
+    'Without a verified `wt-` context this command would fall back to CGC’s default context resolution, silently breaking isolation. The mapping is created under lifecycle.autoCreate consent at session start (or manually with `cgc context create <name>` followed by a new session in this worktree).',
+  )
+  return lines.join('\n')
+}
+
+/**
+ * Task 2.3's fail-closed tool-use guard for the spawning `/cgc` verbs
+ * (index / sync / doctor / report): a workspace whose worktree mapping
+ * identity is not verified must not receive ANY extension-tool spawn.
+ * Returns true — having already notified and recorded the action — when the
+ * caller must return without running anything. Fail-open contract: `off`
+ * mode, an absent surface, or a throwing surface all proceed exactly as
+ * before (zero change outside isolate mode). Never throws.
+ */
+function enforceWorktreeToolBlock(
+  ctx: { cwd: string; ui: CgcCommandUi },
+  deps: CgcCommandDependencies,
+  verb: CgcSubcommandVerb,
+): boolean {
+  if (deps.worktreeBlock === undefined) return false
+  let block: WorktreeIsolationBlock | null
+  try {
+    block = deps.worktreeBlock(ctx.cwd)
+  } catch {
+    // Fail-open: a throwing block surface must never break a command.
+    return false
+  }
+  if (block === null || !block.blocked) return false
+
+  const isMismatch = block.status === 'mismatch'
+  notify(
+    ctx,
+    isMismatch
+      ? buildWorktreeIdentityMismatchNotice(ctx.cwd, block.contextName, block.reason)
+      : buildWorktreeUnverifiedBlockNotice(ctx.cwd, verb, block.reason),
+    isMismatch ? 'error' : 'warning',
+  )
+  try {
+    deps.recordAction?.({
+      kind: isMismatch ? 'worktree-identity-mismatch' : 'worktree-isolation',
+      cwd: ctx.cwd,
+      detail:
+        `/cgc ${verb} refused: ` +
+        (block.reason ?? (isMismatch ? 'identity mismatch' : 'no verified worktree mapping')),
+      ok: null,
+    })
+  } catch {
+    // Fail-open: recording must never break the command.
+  }
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -872,6 +897,12 @@ async function handleIndexCommand(
     return
   }
 
+  // Task 2.3: fail-closed tool-use block — a worktree whose mapping identity
+  // cannot be verified gets NO index/rebuild spawn from this surface (a
+  // spawn would lose its `--context` and silently index CGC's default
+  // context). Applies before both the force and the creation paths.
+  if (enforceWorktreeToolBlock(ctx, deps, 'index')) return
+
   if (force) {
     const granted = await confirmForceRebuild(ctx, ctx.cwd)
     if (!granted) {
@@ -954,6 +985,10 @@ async function handleSyncCommand(
     notify(ctx, syncUnknownArgumentNotice(restTrimmed.split(/\s+/)[0] ?? restTrimmed), 'info')
     return
   }
+
+  // Task 2.3: fail-closed tool-use block (same guarantee as /cgc index — no
+  // spawn without a verified worktree mapping in isolate mode).
+  if (enforceWorktreeToolBlock(ctx, deps, 'sync')) return
 
   // The same creation gate as `/cgc index` (design D2): sync on an
   // unindexed workspace would be an index creation, which is opt-in
@@ -1074,6 +1109,11 @@ async function handleDoctorCommand(
     notify(ctx, doctorUnknownArgumentNotice(restTrimmed.split(/\s+/)[0] ?? restTrimmed), 'info')
     return
   }
+
+  // Task 2.3: fail-closed tool-use block — a `cgc doctor` spawn from an
+  // unverified worktree would run without the isolation context too; refuse
+  // with the same visible reason instead of silently probing the wrong graph.
+  if (enforceWorktreeToolBlock(ctx, deps, 'doctor')) return
 
   const runner = deps.runner
   if (runner === undefined) {
@@ -1297,6 +1337,11 @@ async function handleReportCommand(
     return
   }
 
+  // Task 2.3: fail-closed tool-use block — refuse before the confirmation
+  // prompt so a blocked workspace never even offers a spawn that would lose
+  // its isolation context.
+  if (enforceWorktreeToolBlock(ctx, deps, 'report')) return
+
   // Resolve the exact destination and confirm it BEFORE anything runs
   // (spec: "the extension confirms the exact path before writing").
   const destination = resolveReportDestination(ctx.cwd)
@@ -1362,12 +1407,50 @@ function parseInvocation(args: string): { verb: CgcSubcommandVerb | null; rest: 
 }
 
 /**
+ * Apply the task 2.2 result-annotation seam to a command context: when an
+ * annotator is wired, the returned context's notify sink routes every
+ * extension-owned command notification through `annotateResult` first (the
+ * decorator is fail-open — a throwing annotator degrades to the raw message,
+ * so the extension's fail-open command contract holds even with a broken
+ * tier). When no annotator is wired, the context is returned unchanged —
+ * zero change outside the opt-in tier. CGC MCP server results never pass
+ * through this seam: it only re-wraps this extension's own command context.
+ */
+function annotatedContext(
+  ctx: ExtensionCommandContext,
+  deps: CgcCommandDependencies,
+): ExtensionCommandContext {
+  const annotate = deps.annotateResult
+  if (typeof annotate !== 'function') return ctx
+  const ui = ctx.ui
+  if (ui === undefined) return ctx
+  return {
+    ...ctx,
+    ui: {
+      ...ui,
+      notify(message: string, type?: 'info' | 'warning' | 'error'): void {
+        let decorated: string = message
+        try {
+          decorated = annotate(message)
+        } catch {
+          // Fail-open: a throwing annotator degrades to the raw output.
+        }
+        ui.notify(decorated, type)
+      },
+    },
+  }
+}
+
+/**
  * Dispatch one `/cgc …` invocation to its verb handler. Never throws, never
  * blocks: every branch is guarded and no verb awaits cgc completion inline.
  * The status verb reads the injected dependency surface; index and sync
  * (2.2/2.3) wire the runner + consent + state surfaces; doctor/report (2.4)
  * trigger diagnostic/reporting work through the shared runner and render the
- * settled output through the shared output-hygiene pipeline.
+ * settled output through the shared output-hygiene pipeline. Task 2.2: the
+ * context handed to verb handlers carries the decorated notify sink when an
+ * annotator is wired, so every extension-owned command output is annotated
+ * at this single choke point — or returned untouched.
  */
 export async function handleCgcInvocation(
   args: string,
@@ -1376,11 +1459,12 @@ export async function handleCgcInvocation(
 ): Promise<void> {
   try {
     const { verb, rest } = parseInvocation(args)
+    const dispatchCtx = annotatedContext(ctx, deps)
     if (verb === null) {
-      notify(ctx, usageText(), 'info')
+      notify(dispatchCtx, usageText(), 'info')
       return
     }
-    await VERB_HANDLERS[verb](ctx, rest, deps)
+    await VERB_HANDLERS[verb](dispatchCtx, rest, deps)
   } catch {
     // Fail-open: a handler defect must surface as a notice, never as a crash
     // or a blocked session (spec: "Fail-open command behavior").

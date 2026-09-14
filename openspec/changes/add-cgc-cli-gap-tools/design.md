@@ -1,6 +1,6 @@
 ## Context
 
-The benefit analysis and the user's scope decision restored this feature: the CGC MCP server's 25-tool catalog lacks bundle **export** (it loads/searches bundles only), named-context **management** (it discovers/switches but cannot create/delete/set-default), and **diagnostics** (no doctor equivalent). These verbs are CLI-only today. This is the campaign's only tool-registering change, and it sits under three in-force contracts: ADR-0001 (wrap-only integration through the shared runner), ADR-0003 (consent model for destructive/file-writing actions), and ADR-0005 (all wrapped output passes the policy pipeline). The user's recorded lean is "opt-out (enabled by default)", explicitly marked as not-final — flagged as an open question below.
+The benefit analysis and the user's scope decision restored this feature: the CGC MCP server's 29-tool catalog lacks bundle **export** (it loads/searches bundles only), named-context **management** (it discovers/switches but cannot create/delete/set-default), and **diagnostics** (no doctor equivalent). These verbs are CLI-only today. This is the campaign's only tool-registering change, and it sits under three in-force contracts: ADR-0001 (wrap-only integration through the shared runner), ADR-0003 (consent model for destructive/file-writing actions), and ADR-0005 (all wrapped output passes the policy pipeline). The user's recorded lean is "opt-out (enabled by default)", explicitly marked as not-final — flagged as an open question below.
 
 ## Goals / Non-Goals
 
@@ -88,7 +88,7 @@ graph TB
 
     subgraph CGC["CodeGraphContext (unmodified)"]
         CLI["cgc binary<br/>(bundle export · context · doctor verbs)"]
-        MCP["cgc MCP server (25 query/management tools)"]
+        MCP["cgc MCP server (29 query/management tools)"]
     end
 
     Agent --> Tools

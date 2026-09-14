@@ -54,6 +54,7 @@ import {
 } from './commands'
 import type { LifecycleAction, LifecycleActionInput, LifecycleSnapshot } from './lifecycle-state'
 import { type CgcCommandResult, CgcRunner } from './runner'
+import type { WorktreeMapResolutionStatus } from './worktree'
 
 // ---------------------------------------------------------------------------
 // Test scaffolding: a recording pi API and a fake command context.
@@ -1935,5 +1936,255 @@ describe('fail-open behavior (task 3.2)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('fail-closed worktree tool-use block (task 2.3)', () => {
+  function blockedDeps(
+    base: CgcCommandDependencies,
+    block: {
+      status: WorktreeMapResolutionStatus
+      contextName?: string | null
+      reason?: string | null
+      blocked?: boolean
+    } | null,
+  ): CgcCommandDependencies {
+    return {
+      ...base,
+      worktreeBlock: () =>
+        block === null
+          ? null
+          : {
+              blocked: block.blocked ?? true,
+              status: block.status,
+              contextName: block.contextName ?? null,
+              reason: block.reason ?? null,
+            },
+    }
+  }
+
+  it('/cgc index refuses to spawn on an identity mismatch (fail closed), surfaces the mismatch state, and records it', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const { recordAction, actions } = makeRecordSpy()
+    const { ctx, notified } = makeContext()
+    const deps = blockedDeps(
+      { runner, lifecycle: { autoCreate: true }, recordAction },
+      {
+        status: 'mismatch',
+        contextName: 'wt-branch-a',
+        reason:
+          'mapped context wt-branch-a no longer matches this workspace (different repository); blocked until re-consent',
+      },
+    )
+
+    await handleCgcInvocation('index', ctx, deps)
+
+    expect(runs).toHaveLength(0)
+    expect(notified[0]?.type).toBe('error')
+    expect(notified[0]?.message).toContain('identity mismatch')
+    expect(notified[0]?.message).toContain('wt-branch-a')
+    expect(notified[0]?.message).toContain('re-consent')
+    expect(actions.map((action) => action.kind)).toContain('worktree-identity-mismatch')
+    expect(actions.find((a) => a.kind === 'worktree-identity-mismatch')?.cwd).toBe('/ws')
+  })
+
+  it('/cgc index --force is refused BEFORE the confirmation dialog on a blocked workspace', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const { ctx, notified } = makeContext(undefined, '/ws', () => {
+      throw new Error('dialog must not be touched when the workspace is blocked')
+    })
+    const deps = blockedDeps(
+      { runner, lifecycle: { autoCreate: true } },
+      { status: 'mismatch', contextName: 'wt-branch-a', reason: 'no longer matches' },
+    )
+
+    await handleCgcInvocation('index --force', ctx, deps)
+
+    expect(runs).toHaveLength(0)
+    expect(notified[0]?.message).toContain('identity mismatch')
+  })
+
+  it('/cgc sync refuses to spawn on a worktree with no verified mapping (unmapped)', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const { recordAction, actions } = makeRecordSpy()
+    const { ctx, notified } = makeContext()
+    const deps = blockedDeps(
+      { runner, lifecycle: { autoCreate: true }, recordAction },
+      { status: 'unmapped', reason: 'no worktree mapping recorded for /ws' },
+    )
+
+    await handleCgcInvocation('sync', ctx, deps)
+
+    expect(runs).toHaveLength(0)
+    expect(notified[0]?.type).toBe('warning')
+    expect(notified[0]?.message).toContain('no verified mapping')
+    expect(notified[0]?.message).toContain('default context')
+    expect(actions.map((action) => action.kind)).toContain('worktree-isolation')
+  })
+
+  it('/cgc doctor refuses to spawn on a blocked workspace', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const { ctx, notified } = makeContext()
+    const deps = blockedDeps({ runner }, { status: 'mismatch' })
+
+    await handleCgcInvocation('doctor', ctx, deps)
+
+    expect(runs).toHaveLength(0)
+    expect(notified[0]?.message).toContain('identity mismatch')
+  })
+
+  it('/cgc report refuses BEFORE the write confirmation on a blocked workspace (nothing spawned, no prompt)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cgc-report-block-'))
+    const { runner, runs } = makeFakeRunner()
+    const { ctx, notified } = makeContext(undefined, dir, () => {
+      throw new Error('report confirmation must not be offered when the workspace is blocked')
+    })
+    const deps = blockedDeps({ runner }, { status: 'mismatch', contextName: 'wt-x' })
+    try {
+      await handleCgcInvocation('report', ctx, deps)
+      expect(runs).toHaveLength(0)
+      expect(notified[0]?.message).toContain('identity mismatch')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('proceeds normally when the block surface is null (off mode), absent, or not blocked', async () => {
+    // Matching identity: NOT blocked — the command runs exactly as before.
+    const { runner, runs } = makeFakeRunner()
+    const { ctx, notified } = makeContext()
+    const deps = blockedDeps(
+      { runner, lifecycle: { autoCreate: true } },
+      { status: 'match', blocked: false },
+    )
+    await handleCgcInvocation('index', ctx, deps)
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.args).toEqual(['index', '.'])
+
+    // Non-worktree: NOT blocked.
+    const runs2: { cwd: string; args: readonly string[] }[] = []
+    const runner2 = {
+      isInFlight: () => false,
+      run(cwd: string, options: { args: readonly string[] }): Promise<CgcCommandResult> {
+        runs2.push({ cwd, args: [...options.args] })
+        return Promise.resolve(makeResult())
+      },
+    }
+    const deps2 = blockedDeps(
+      { runner: runner2 as unknown as CgcRunner, lifecycle: { autoCreate: true } },
+      { status: 'not-worktree', blocked: false },
+    )
+    await handleCgcInvocation('index', ctx, deps2)
+    expect(runs2).toHaveLength(1)
+
+    // Absent surface: zero change.
+    const deps3: CgcCommandDependencies = {
+      runner: runner2 as unknown as CgcRunner,
+      lifecycle: { autoCreate: true },
+    }
+    await handleCgcInvocation('index', ctx, deps3)
+    expect(runs2).toHaveLength(2)
+    expect(notified.some((n) => n.message.includes('identity mismatch'))).toBe(false)
+  })
+
+  it('fails open when the worktreeBlock surface throws (a broken surface never breaks a command)', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const { ctx } = makeContext()
+    const deps: CgcCommandDependencies = {
+      runner,
+      lifecycle: { autoCreate: true },
+      worktreeBlock: () => {
+        throw new Error('broken surface')
+      },
+    }
+    await handleCgcInvocation('index', ctx, deps)
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.args).toEqual(['index', '.'])
+  })
+})
+
+describe('result-annotation seam (task 2.2: annotateResult)', () => {
+  it('leaves outputs untouched when no annotator is wired (the default)', async () => {
+    const { ctx, notified } = makeContext()
+
+    await handleCgcInvocation('status', ctx)
+
+    expect(notified).toHaveLength(1)
+    expect(notified[0]?.message).toContain('CGC status — /ws')
+    expect(notified[0]?.message).not.toContain('CGC note:')
+  })
+
+  it('decorates extension-owned command outputs at the single notify choke point', async () => {
+    const { ctx, notified } = makeContext()
+    // The production wiring binds the proactive ResultAnnotator here (an
+    // identity until the opt-in tier observes staleness); the test supplies a
+    // concrete decorator to prove the seam routes every notification.
+    const deps: CgcCommandDependencies = {
+      annotateResult: (text) =>
+        `${text}\nCGC note: code graph possibly stale for /ws; run /cgc sync to reconcile.`,
+    }
+
+    await handleCgcInvocation('status', ctx, deps)
+
+    expect(notified).toHaveLength(1)
+    expect(notified[0]?.message).toContain('CGC status — /ws')
+    expect(notified[0]?.message).toContain('CGC note: code graph possibly stale')
+    expect(notified[0]?.message).toContain('/cgc sync')
+  })
+
+  it('routes action notices through the annotator too (uniform decoration), without changing their content', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const { ctx, notified } = makeContext()
+    const deps: CgcCommandDependencies = {
+      runner,
+      lifecycle: { autoCreate: true },
+      annotateResult: (text) => `${text}\nCGC note: test annotation`,
+    }
+
+    await handleCgcInvocation('index', ctx, deps)
+
+    expect(runs).toHaveLength(1)
+    expect(notified).toHaveLength(1)
+    expect(notified[0]?.message).toContain('index creation started in the background')
+    expect(notified[0]?.message).toEndWith('\nCGC note: test annotation')
+  })
+
+  it('fails open: a throwing annotator degrades to the raw output and never breaks the command', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const { ctx, notified } = makeContext()
+    const deps: CgcCommandDependencies = {
+      runner,
+      lifecycle: { autoCreate: true },
+      annotateResult: () => {
+        throw new Error('annotator exploded')
+      },
+    }
+
+    expect(async () => await handleCgcInvocation('index', ctx, deps)).not.toThrow()
+    expect(runs).toHaveLength(1)
+    expect(notified).toHaveLength(1)
+    expect(notified[0]?.message).toContain('index creation started in the background')
+    expect(notified[0]?.message).not.toContain('CGC note:')
+  })
+
+  it('keeps the consent surface intact next to the wrapped notify (confirm still reaches the context)', async () => {
+    const { runner, runs } = makeFakeRunner()
+    let consented = false
+    const { ctx, notified } = makeContext(undefined, '/ws', () => {
+      consented = true
+      return true
+    })
+    const deps: CgcCommandDependencies = {
+      runner,
+      annotateResult: (text) => `${text}\nCGC note: test annotation`,
+    }
+
+    await handleCgcInvocation('index --force', ctx, deps)
+
+    expect(consented).toBe(true)
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.args).toEqual(['index', '.', '--force'])
+    expect(notified).toHaveLength(1)
+    expect(notified[0]?.message).toEndWith('\nCGC note: test annotation')
   })
 })

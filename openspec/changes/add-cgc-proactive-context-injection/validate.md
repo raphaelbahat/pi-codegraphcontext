@@ -43,3 +43,5 @@ None.
 `VERDICT: READY`
 
 > **Re-validated 2026-09-07** after the disposition pass revised tasks.md and sibling artifacts — `openspec validate --type change --strict` passed; the READY verdict below is re-confirmed as of this date.
+>
+> **Re-validated 2026-09-13** after tasks 3.2–3.3 were marked — `openspec validate add-cgc-proactive-context-injection --type change --strict` passed (`Change 'add-cgc-proactive-context-injection' is valid`, exit 0); the READY verdict below is re-confirmed as of this date.

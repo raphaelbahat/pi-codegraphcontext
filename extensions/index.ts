@@ -8,11 +8,26 @@ import {
   installProcessCleanup,
   type ProcessCleanupHandle,
 } from './cleanup'
+import {
+  type CliGapToolDependencies,
+  type CliGapToolsApi,
+  createBundleExportExecutor,
+  createContextExecutor,
+  createDoctorExecutor,
+  registerCliGapTools,
+} from './cli-gap-tools'
 import { type CgcCommandDependencies, registerCgcCommands } from './commands'
 import { type ConfigResult, loadConfig } from './config'
 import { type GateExtensionApi, LifecycleGate } from './gate'
 import { type LifecycleActionInput, LifecycleStateStore } from './lifecycle-state'
+import {
+  CoverageNoteInjector,
+  DriftSteerInjector,
+  type ProactiveInjectionApi,
+  ResultAnnotator,
+} from './proactive'
 import { CgcRunner } from './runner'
+import { StatusHud, type StatusHudExtensionApi } from './status-hud'
 import { WorkspaceDetector } from './workspace'
 
 let cachedConfig: ConfigResult | undefined
@@ -21,6 +36,10 @@ let cachedCleanup: ProcessCleanupHandle | undefined
 let cachedDetector: WorkspaceDetector | undefined
 let cachedStateStore: LifecycleStateStore | undefined
 let cachedGate: LifecycleGate | undefined
+let cachedCoverageInjector: CoverageNoteInjector | undefined
+let cachedDriftSteerInjector: DriftSteerInjector | undefined
+let cachedResultAnnotator: ResultAnnotator | undefined
+let cachedStatusHud: StatusHud | undefined
 
 /**
  * Resolved extension configuration (defaults <- config files <- env overrides).
@@ -129,6 +148,30 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
     // does not engage).
   }
 
+  // Tasks 1.2–1.3 (add-cgc-status-hud): the one-line lifecycle chip. Renders
+  // the active session's lifecycle state from the gate's per-session store
+  // (fallback: the process-lifetime store) — subscribe-only, event-driven
+  // with debounce coalescing, zero spawns and zero polling (ADR 0001 / ADR
+  // 0004). Registered AFTER the gate so the gate's session_start handler runs
+  // first and the per-session store exists when this HUD resolves it; without
+  // a gate the HUD still renders from the fallback store. No `freshnessFor`
+  // provider is passed while add-cgc-freshness-drift-sync is absent, so the
+  // HUD subscribes to lifecycle only and the chip omits the freshness section
+  // — the task 1.3 specified degradation (the seam exists; the freshness
+  // change wires it).
+  // Fail-open: registration must never break extension load.
+  try {
+    cachedStatusHud ??= new StatusHud({
+      storeFor: (_cwd: string) => cachedGate?.lifecycleStore() ?? getLifecycleStateStore(),
+      api: pi as unknown as StatusHudExtensionApi,
+    })
+    cachedStatusHud.register()
+  } catch {
+    // Fail-open: HUD registration must never break extension load. Without a
+    // registered HUD the extension performs no status rendering — the session
+    // proceeds normally.
+  }
+
   // Task 1.1 (add-cgc-slash-commands): the five human-facing `/cgc` commands.
   // One `registerCommand("cgc", …)` whose handler dispatches on the first
   // argument (pi parses invocations at the first space, so `/cgc status`
@@ -153,6 +196,14 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       },
       runner: cachedRunner,
       lifecycle: getConfig().config.lifecycle,
+      // Task 2.3's fail-closed tool-use surface: the gate's session resolves
+      // the current worktree isolation block (isolate mode only). Null for
+      // `off` mode / before the first session — the spawning verbs then
+      // behave exactly as before (zero change outside isolate mode). A
+      // blocked workspace (identity mismatch or no verified mapping) gets no
+      // /cgc index|sync|doctor|report spawn: without a verified `--context`
+      // the command would silently fall into CGC's default context.
+      worktreeBlock: (cwd: string) => cachedGate?.worktreeBlockFor(cwd) ?? null,
       recordAction: (input: LifecycleActionInput) => {
         const store = cachedGate?.lifecycleStore() ?? getLifecycleStateStore()
         try {
@@ -161,10 +212,118 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
           // Fail-open: recording must never break the command handlers.
         }
       },
+      // Task 2.2 (add-cgc-proactive-context-injection): the result-annotation
+      // seam. When the opt-in tier is enabled and the session observes
+      // staleness, every extension-owned command notification is decorated
+      // with the one-line freshness annotation (see the ResultAnnotator
+      // wiring below); otherwise this is an identity — zero change. The
+      // closure is evaluated per notification, so it reads the annotator
+      // instance assigned later in this registration pass.
+      annotateResult: (text: string) => cachedResultAnnotator?.annotate(text) ?? text,
     }
     registerCgcCommands(pi, dependencies)
   } catch {
     // Fail-open: command registration must never break extension load.
+  }
+
+  // Task 1.1 (add-cgc-cli-gap-tools): the three CLI-gap tools
+  // (cgc_bundle_export, cgc_context, cgc_doctor). Registered ONLY when
+  // `tools.cliGap.enabled` is true — the default; the
+  // CGC_TOOLS_CLI_GAP_ENABLED environment override takes precedence over the
+  // config key (design D2). When disabled, no CLI-gap tool exists in the
+  // tool catalog at all. Task 1.2 wires the cgc_bundle_export executor and
+  // task 1.3 wires the cgc_context executor (list/create/delete/set-default;
+  // delete behind the ADR-0003 confirmation) through the shared runner
+  // (argument-array spawn, session cwd, consent layer, output policy);
+  // task 1.4 wires the cgc_doctor executor (read-only diagnostics through
+  // the same runner). When no runner exists (its construction failed), the
+  // executors are not supplied and the tools fail closed — nothing can spawn
+  // anyway.
+  // Fail-open: registration must never break extension load.
+  try {
+    if (getConfig().config.tools.cliGap.enabled) {
+      const cliGapDeps: CliGapToolDependencies = {}
+      if (cachedRunner !== undefined) {
+        cliGapDeps.bundleExport = createBundleExportExecutor({ runner: cachedRunner })
+        cliGapDeps.context = createContextExecutor({ runner: cachedRunner })
+        cliGapDeps.doctor = createDoctorExecutor({ runner: cachedRunner })
+      }
+      registerCliGapTools(pi as unknown as CliGapToolsApi, cliGapDeps)
+    }
+  } catch {
+    // Fail-open: tool registration must never break extension load. Without
+    // the surface the extension degrades to the remaining surfaces only.
+  }
+
+  // Task 1.3 (add-cgc-proactive-context-injection): the session-start
+  // coverage note. One-shot per session via `before_agent_start` — the same
+  // documented system-prompt mechanism as the routing card (change 2 D4):
+  // the handler appends the capped coverage note to the chained system
+  // prompt exactly once, on the first turn where the ADR-0002 readiness
+  // predicate holds and the gate's cached classification is available. Gated
+  // on `proactive.sessionNote` (default on, design D1). The note is built
+  // exclusively from the gate's cached classification (`lastClassification`
+  // → `coverageNoteSourceFrom`; zero spawns, ADR 0001) and the session cwd
+  // (never process.cwd()). Fail-open: registration must never break
+  // extension load; without a gate the provider returns null and the tier
+  // degrades to silence.
+  try {
+    cachedCoverageInjector ??= new CoverageNoteInjector({
+      sessionNote: getConfig().config.proactive.sessionNote,
+      sourceFor: (cwd: string) => cachedGate?.lastClassification(cwd) ?? null,
+      api: pi as unknown as ProactiveInjectionApi,
+    })
+    cachedCoverageInjector.register()
+  } catch {
+    // Fail-open: injection registration must never break extension load.
+  }
+
+  // Task 2.1 (add-cgc-proactive-context-injection): the opt-in drift-steer
+  // tier. One agent-facing steer per fresh → possibly-stale freshness
+  // episode, naming the staleness and the `/cgc sync` option, delivered
+  // through the same documented before_agent_start prompt mechanism as the
+  // coverage note (design D3/D5). Gated on `proactive.driftSteers` (default
+  // off — never fires when disabled, and a disabled tier subscribes to
+  // nothing). The freshness capability (add-cgc-freshness-drift-sync) is not
+  // installed, so no `freshnessFor` provider is passed and the tier observes
+  // no transitions — the specified degradation (the seam exists; change 7
+  // wires the real store). Same shared readiness predicate and fail-open
+  // registration posture as the coverage note.
+  try {
+    cachedDriftSteerInjector ??= new DriftSteerInjector({
+      driftSteers: getConfig().config.proactive.driftSteers,
+      sourceFor: (cwd: string) => cachedGate?.lastClassification(cwd) ?? null,
+      api: pi as unknown as ProactiveInjectionApi,
+    })
+    cachedDriftSteerInjector.register()
+  } catch {
+    // Fail-open: steer registration must never break extension load.
+  }
+
+  // Task 2.2 (add-cgc-proactive-context-injection): the opt-in
+  // result-annotation tier. One-line freshness annotation appended to
+  // outputs the extension itself produces (slash-command renders), reached
+  // through the `annotateResult` dependency wired into the commands surface
+  // above — the commands notify choke point applies it to every
+  // extension-owned command output. Gated on `proactive.resultAnnotations`
+  // (default off — never annotates when disabled, and a disabled tier
+  // subscribes to nothing). The freshness capability
+  // (add-cgc-freshness-drift-sync) is not installed, so no `freshnessFor`
+  // provider is passed and the tier observes no staleness — `annotate` is an
+  // identity, the specified degradation (the seam exists; change 7 wires the
+  // real store, and end-to-end annotation firing then activates). CGC MCP
+  // server results are never touched (design D4 / ADR-0009). Same shared
+  // readiness predicate and fail-open registration posture as the other
+  // tiers.
+  try {
+    cachedResultAnnotator ??= new ResultAnnotator({
+      resultAnnotations: getConfig().config.proactive.resultAnnotations,
+      sourceFor: (cwd: string) => cachedGate?.lastClassification(cwd) ?? null,
+      api: pi as unknown as ProactiveInjectionApi,
+    })
+    cachedResultAnnotator.register()
+  } catch {
+    // Fail-open: annotator registration must never break extension load.
   }
 
   // The lifecycle gate (session_start) is registered by the CGC lifecycle

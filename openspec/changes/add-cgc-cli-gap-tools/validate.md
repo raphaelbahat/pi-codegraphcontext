@@ -60,3 +60,17 @@ None outstanding. (CB5's snake_case/camelCase gloss nit is documentation-level, 
 `VERDICT: READY`
 
 > **Re-validated 2026-09-07** after the disposition pass revised tasks.md and sibling artifacts — `openspec validate --type change --strict` passed; the READY verdict below is re-confirmed as of this date.
+
+---
+
+## Post-implementation strict validation (task 2.5, before archive)
+
+- Validation date: 2026-09-14
+- Command: `openspec validate add-cgc-cli-gap-tools --type change --strict` (run from repo root)
+- Exit code: 0
+- Raw output:
+```
+Change 'add-cgc-cli-gap-tools' is valid
+```
+
+Strict validation passes (also verified in verifier pass 10, including a bogus-change-id negative check, exit 1). All 6 requirements / 14 scenarios in `specs/cgc-cli-bridge/spec.md` were audited during the 2.4 scenario verification. No further revision required before archive.

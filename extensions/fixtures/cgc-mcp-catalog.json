@@ -1,0 +1,85 @@
+{
+  "catalog": "codegraphcontext-mcp",
+  "provenance": {
+    "capturedAt": "2026-09-14T00:00:00Z",
+    "source": "CodeGraphContext MCP server — documented tool catalog (github.com/raphaelbahat/codegraphcontext)",
+    "catalogVersion": "0.1.0",
+    "refresh": "Deliberate refresh: regenerate this snapshot from the live CGC MCP catalog (the `mcp` tool list showing the codegraphcontext server's tools) whenever the server's catalog changes, and bump capturedAt to the capture date. Never edit tool entries ad hoc — the D5 collision test fails when provenance is missing, malformed, or future-dated, so silent snapshot edits are visibly caught in CI."
+  },
+  "tools": [
+    {
+      "name": "add_code_to_graph",
+      "behavior": "Performs a one-time scan of a local folder to add its code to the graph. Ideal for indexing a new codebase before querying."
+    },
+    { "name": "add_package_to_graph", "behavior": "Add a package to the graph." },
+    {
+      "name": "analyze_architectural_evolution",
+      "behavior": "Analyze repository growth trend and identify Technical Debt Hotspots (combining code complexity and change frequency)."
+    },
+    {
+      "name": "analyze_code_relationships",
+      "behavior": "Analyze code relationships like 'who calls this function' or 'class hierarchy'."
+    },
+    {
+      "name": "calculate_cyclomatic_complexity",
+      "behavior": "Calculate complexity of a function."
+    },
+    {
+      "name": "check_job_status",
+      "behavior": "Check the status and progress of a background job."
+    },
+    {
+      "name": "delete_repository",
+      "behavior": "DESTRUCTIVE AND IRREVERSIBLE. Permanently deletes a repository and every node and relationship associated with it."
+    },
+    { "name": "discover_codegraph_contexts", "behavior": "Discover .codegraphcontext folders." },
+    {
+      "name": "execute_cypher_query",
+      "behavior": "Run a read-only Cypher query against the code graph."
+    },
+    {
+      "name": "find_code",
+      "behavior": "Find relevant code snippets related to a keyword (e.g., function name, class name, or content)."
+    },
+    { "name": "find_datasource_nodes", "behavior": "Query datasource nodes." },
+    { "name": "find_dead_code", "behavior": "Find potentially unused functions." },
+    { "name": "find_java_spring_beans", "behavior": "Find Spring beans." },
+    { "name": "find_java_spring_endpoints", "behavior": "Find Spring endpoints." },
+    { "name": "find_most_complex_functions", "behavior": "Find most complex functions." },
+    { "name": "generate_report", "behavior": "Generate codegraph report." },
+    { "name": "get_repository_stats", "behavior": "Get repository statistics." },
+    {
+      "name": "list_graphs",
+      "behavior": "List all available graphs in the FalkorDB instance. Each graph typically corresponds to an indexed repository."
+    },
+    { "name": "list_indexed_repositories", "behavior": "List all indexed repositories." },
+    { "name": "list_jobs", "behavior": "List all background jobs and their current status." },
+    { "name": "list_watched_paths", "behavior": "List all watched directories." },
+    {
+      "name": "load_bundle",
+      "behavior": "Load a pre-indexed graph bundle (.cgc) into the database. Note that clear_existing=True is destructive."
+    },
+    { "name": "search_registry_bundles", "behavior": "Search registry bundles." },
+    {
+      "name": "simulate_architectural_change",
+      "behavior": "Simulate architectural modifications (service decomposition, adding/removing dependencies, deleting modules)."
+    },
+    {
+      "name": "simulate_metrics",
+      "behavior": "Calculate repository architectural metrics (coupling, cohesion, circular dependencies, complexity)."
+    },
+    {
+      "name": "switch_context",
+      "behavior": "Switch active graph context. Refuses while any indexing job is PENDING or RUNNING."
+    },
+    { "name": "unwatch_directory", "behavior": "Stop watching a directory." },
+    {
+      "name": "visualize_graph_query",
+      "behavior": "Generate a Neo4j visualization URL for a Cypher query."
+    },
+    {
+      "name": "watch_directory",
+      "behavior": "Continuously monitors a directory and keeps graph updated."
+    }
+  ]
+}

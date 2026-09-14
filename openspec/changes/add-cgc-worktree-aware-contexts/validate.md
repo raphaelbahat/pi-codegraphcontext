@@ -52,3 +52,17 @@ None outstanding. (The validator-prescribed submodule caveat was applied to desi
 `VERDICT: READY`
 
 > **Re-validated 2026-09-07** after the disposition pass revised tasks.md and sibling artifacts — `openspec validate --type change --strict` passed; the READY verdict below is re-confirmed as of this date.
+
+---
+
+## Post-implementation strict validation (task 3.4, before archive)
+
+- Validation date: 2026-09-13
+- Command: `openspec validate add-cgc-worktree-aware-contexts --type change --strict` (run from repo root)
+- Exit code: 0
+- Raw output:
+```
+Change 'add-cgc-worktree-aware-contexts' is valid
+```
+
+Strict validation passes with all 10 spec scenarios independently verified during the 3.3 audit (verifier passes 9 and 10); tasks.md marks 1.1–3.3 complete, only 3.4 remained open before this run. No further revision required before archive.

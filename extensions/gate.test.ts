@@ -239,9 +239,14 @@ afterEach(() => {
 
 /** Wait until the recorded last action for the workspace has the given kind. */
 async function settleUntil(gate: LifecycleGate, cwd: string, kind: string): Promise<void> {
-  for (let i = 0; i < 100; i++) {
+  // Yield to the MACROtask queue (timers / I/O / process events), not just microtasks:
+  // `await Promise.resolve()` never lets a spawned-CLI completion callback run, so under CI
+  // load this loop could exhaust before the action settles (observed 2026-09-15 in
+  // release-branch CI, run 34975161174). Poll with real event-loop yields and a generous
+  // budget — when the state is already settled the first check returns immediately.
+  for (let i = 0; i < 1000; i++) {
     if (gate.snapshot(cwd)?.lastAction?.kind === kind) return
-    await Promise.resolve()
+    await new Promise((resolve) => setImmediate(resolve))
   }
   throw new Error(`state never settled to ${kind}`)
 }

@@ -102,14 +102,22 @@ export function installProcessCleanup(
   // operational reality (the lifecycle's `corrupt` state exists for it), while
   // an orphaned lock-holding cgc process is guaranteed harm.
   const hardSweep = (path: CleanupPath, signal?: NodeJS.Signals): number => {
+    let terminated = 0
     try {
-      const terminated = runner.terminateAllSync()
-      record(path, terminated, signal)
-      return terminated
+      terminated = runner.terminateAllSync()
     } catch {
-      record(path, 0, signal)
-      return 0
+      terminated = 0
     }
+    // Spill files are removed on every teardown path (design D3, task 1.4):
+    // the sweep above performs no file I/O itself, so this stays safe on the
+    // synchronous `exit` and signal paths.
+    try {
+      runner.cleanupSpills()
+    } catch {
+      // Fail-open: a spill cleanup defect never blocks process teardown.
+    }
+    record(path, terminated, signal)
+    return terminated
   }
 
   // Path 1: graceful teardown when the Pi session shuts down. If the host does
@@ -122,9 +130,16 @@ export function installProcessCleanup(
       try {
         void runner
           .killAll()
-          .then((terminated) => record('session-shutdown', terminated))
-          .catch(() => record('session-shutdown'))
+          .then((terminated) => {
+            runner.cleanupSpills()
+            record('session-shutdown', terminated)
+          })
+          .catch(() => {
+            runner.cleanupSpills()
+            record('session-shutdown')
+          })
       } catch {
+        runner.cleanupSpills()
         record('session-shutdown')
       }
     }

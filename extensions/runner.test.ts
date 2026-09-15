@@ -315,6 +315,45 @@ describe('CgcRunner', () => {
     }
   })
 
+  it('honors the output.redactSecrets opt-out end to end (values left as produced)', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const runner = new CgcRunner({ executable: BUN, redactSecrets: false })
+      const result = await runner.run(workspace, {
+        args: ['-e', 'process.stdout.write("api_key=abcdef1234567890")'],
+        env: {},
+      })
+
+      expect(result.ok).toBe(true)
+      expect(result.stdout).toBe('api_key=abcdef1234567890')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('sets CGC_OUTPUT_FORMAT=gcf when gcfOutput is on and leaves it unset otherwise', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const on = new CgcRunner({ executable: BUN, gcfOutput: true })
+      const onResult = await on.run(workspace, {
+        args: ['-e', 'process.stdout.write(process.env.CGC_OUTPUT_FORMAT ?? "")'],
+        env: {},
+      })
+      expect(onResult.ok).toBe(true)
+      expect(onResult.stdout).toBe('gcf')
+
+      const off = new CgcRunner({ executable: BUN })
+      const offResult = await off.run(workspace, {
+        args: ['-e', 'process.stdout.write(process.env.CGC_OUTPUT_FORMAT ?? "")'],
+        env: {},
+      })
+      expect(offResult.ok).toBe(true)
+      expect(offResult.stdout).toBe('')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
   it('applies the output policy to stderr too (uniform before any consumer)', async () => {
     const workspace = makeWorkspace()
     try {

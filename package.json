@@ -39,6 +39,10 @@
   "pi": {
     "extensions": [
       "./extensions"
+    ],
+    "skills": [
+      "./skills",
+      "!skills/cgc-routing/**"
     ]
   },
   "engines": {

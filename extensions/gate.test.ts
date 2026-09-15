@@ -97,6 +97,7 @@ function makeConfig(
     freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
     output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
     tools: { cliGap: { enabled: true } },
+    guidance: { routingSkill: false },
   }
 }
 
@@ -652,6 +653,7 @@ describe('LifecycleGate task 3.3 audit fills (probe budgets, dispose, teardown)'
         freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
         output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
         tools: { cliGap: { enabled: true } },
+        guidance: { routingSkill: false },
       },
     })
 
@@ -847,6 +849,7 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
       freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
       output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
       tools: { cliGap: { enabled: true } },
+      guidance: { routingSkill: false },
     }
   }
 
@@ -938,6 +941,7 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
         freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
         output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
         tools: { cliGap: { enabled: true } },
+        guidance: { routingSkill: false },
       },
       classifier: makeStubClassifier('unindexed'),
     })
@@ -1154,6 +1158,7 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
         freshness: { watch: false, autoSync: true, maxSyncsPerSession: 2 },
         output: { maxBytes: 16_384, spillToTemp: true, redactSecrets: true, gcf: false },
         tools: { cliGap: { enabled: true } },
+        guidance: { routingSkill: false },
       },
       classifier: makeStubClassifier('unindexed'),
     })

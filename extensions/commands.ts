@@ -203,22 +203,13 @@ export interface CgcStatusView {
 // Shared output-hygiene renderer (task 1.3 / add-cgc-output-token-economy 1.1)
 // ---------------------------------------------------------------------------
 
-// Task 1.1 (add-cgc-output-token-economy) moved the renderer's hygiene stages
-// into the shared policy module (output-policy.ts) so the RUNNER applies one
-// uniform pipeline — strip → redact → bound head+tail — before any consumer
-// receives results. This surface re-exports the renderer conveniences so the
-// command renderers keep working unchanged; the per-surface bounding is
-// retired by task 2.1, which consumes the runner's policy output directly.
-import { renderCommandText } from './output-policy'
-
-export type { CgcOutputBoundOptions } from './output-policy'
-export {
-  boundText,
-  OUTPUT_TEXT_BUDGET,
-  renderCommandText,
-  stripControlSequences,
-  truncationMarker,
-} from './output-policy'
+// Task 2.1 (add-cgc-output-token-economy) migrates the command renderer to a
+// pure consumer of the shared runner's output policy (output-policy.ts): the
+// runner now applies strip → redact → bound head+tail to every captured
+// stream before any surface receives it. The renderer no longer re-exports or
+// re-applies those stages — it renders the policy output directly, exactly as
+// ADR-0005 requires ("none may implement private output handling that
+// bypasses it").
 
 /** Human label for a lifecycle state; null renders as unavailable (convention). */
 export function lifecycleStateLabel(state: LifecycleSnapshot['state']): string {
@@ -337,9 +328,11 @@ function formatFreshnessLine(freshness: CgcFreshnessSummary): string {
  *   - the freshness section ONLY when the freshness capability is present
  *     (specified degradation otherwise).
  *
- * The final text goes through the shared output-hygiene pipeline (task 1.3):
- * control-sequence-stripped and size-bounded with an explicit marker (design
- * D4).
+ * Status is a passive renderer (ADR-0004) of lifecycle state. Its embedded
+ * detail (classifier reasons over already-policed probe streams) is the
+ * runner's shared policy output, so this surface applies NO private hygiene —
+ * no stripping and no bounding (task 2.1, ADR-0005) — and renders the joined
+ * lines directly.
  */
 export function renderStatusText(view: CgcStatusView): string {
   const lines: string[] = []
@@ -363,7 +356,7 @@ export function renderStatusText(view: CgcStatusView): string {
     lines.push(formatFreshnessLine(view.freshness))
   }
 
-  return renderCommandText(lines.join('\n'), { label: 'status' })
+  return lines.join('\n')
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,21 +1052,20 @@ export function doctorUnknownArgumentNotice(argument: string): string {
 
 /**
  * Surface one settled diagnostic-style run (doctor/report, task 2.4): the
- * captured output is rendered through the shared output-hygiene pipeline
- * (design D4 — control-stripped, size-bounded with an explicit truncation
- * marker) and the runner-level outcome is surfaced alongside it ("no
- * semantic parsing of doctor output beyond success/failure"). A `BUSY`
- * outcome is handled by the caller (design D3's one-time busy notice),
- * never here.
+ * captured streams are already the shared runner's policy output (task 2.1 —
+ * ADR-0005 strip → redact → bound applied before delivery), so this renderer
+ * joins them WITHOUT private hygiene, and the runner-level outcome is
+ * surfaced alongside them ("no semantic parsing of doctor output beyond
+ * success/failure"). A `BUSY` outcome is handled by the caller (design D3's
+ * one-time busy notice), never here.
  */
 function notifySettledRunOutput(
   ctx: { cwd: string; ui: CgcCommandUi },
   verb: string,
   result: CgcCommandResult,
-  label: string,
 ): void {
   const parts = [result.stdout, result.stderr].filter((part) => part.length > 0)
-  const rendered = parts.length > 0 ? renderCommandText(parts.join('\n'), { label }) : null
+  const rendered = parts.length > 0 ? parts.join('\n') : null
   if (result.ok) {
     if (rendered !== null) {
       notify(ctx, rendered, 'info')
@@ -1157,7 +1149,7 @@ async function handleDoctorCommand(
         notify(ctx, buildBusyNotice(ctx.cwd, result.message), 'warning')
         return
       }
-      notifySettledRunOutput(ctx, 'doctor', result, 'doctor')
+      notifySettledRunOutput(ctx, 'doctor', result)
     })
     .catch(() => {
       // Fail-open: the settle chain must never surface an unhandled rejection.
@@ -1304,7 +1296,7 @@ function startReportWork(
       } catch {
         // Fail-open.
       }
-      notifySettledRunOutput(ctx, 'report', result, 'report')
+      notifySettledRunOutput(ctx, 'report', result)
     })
     .catch(() => {
       // Fail-open: the settle chain must never surface an unhandled rejection.

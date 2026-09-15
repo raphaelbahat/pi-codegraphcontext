@@ -6,6 +6,7 @@ import {
   OUTPUT_TEXT_BUDGET,
   REDACTION_PLACEHOLDER,
   redactSecrets,
+  truncationMarker,
 } from './output-policy'
 
 describe('output policy pipeline (add-cgc-output-token-economy task 1.1)', () => {
@@ -40,6 +41,24 @@ describe('output policy pipeline (add-cgc-output-token-economy task 1.1)', () =>
     expect(redactSecrets('token=abc123', { enabled: false })).toBe('token=abc123')
   })
 
+  it('honors the pipeline opt-out while still stripping and bounding (spec opt-out scenario)', () => {
+    // Redaction off: the secret value survives verbatim, but ANSI stripping
+    // and the size bound still apply — the spec's "values are left as
+    // produced by cgc (bounding and stripping still apply)" scenario.
+    const line = '\u001b[31msecret=abc123\u001b[0m\n'
+    const small = applyOutputPolicy(line, { redact: false })
+    expect(small).toBe('secret=abc123\n')
+    expect(small).not.toContain('\u001b')
+
+    const oversized = applyOutputPolicy(line.repeat(OUTPUT_TEXT_BUDGET), {
+      budget: OUTPUT_TEXT_BUDGET,
+      redact: false,
+    })
+    expect(oversized).toContain('abc123')
+    expect(oversized).toContain('truncated')
+    expect(oversized.length).toBeLessThanOrEqual(OUTPUT_TEXT_BUDGET)
+  })
+
   it('applies strip → redact → bound in the fixed order', () => {
     const line = '\u001b[31msecret=abc123\u001b[0m\n'
     const out = applyOutputPolicy(line.repeat(OUTPUT_TEXT_BUDGET), {
@@ -69,5 +88,38 @@ describe('output policy pipeline (add-cgc-output-token-economy task 1.1)', () =>
     expect(out).toContain('original 1048576 chars')
     expect(out.startsWith('x')).toBe(true)
     expect(out.endsWith('x')).toBe(true)
+  })
+})
+
+describe('truncation marker (add-cgc-output-token-economy task 1.3)', () => {
+  it('states the original size and carries no spill path when none was written', () => {
+    expect(truncationMarker(8192)).toBe('\n… [cgc command output truncated, original 8192 chars]')
+    expect(truncationMarker(8192, 'doctor')).toBe(
+      '\n… [cgc doctor output truncated, original 8192 chars]',
+    )
+  })
+
+  it('names the spill file path when one was provided', () => {
+    const spillPath = '/tmp/cgc-session-abc/spill-stdout-1.log'
+    const marker = truncationMarker(8192, 'doctor', spillPath)
+
+    expect(marker).toContain('cgc doctor output truncated')
+    expect(marker).toContain('original 8192 chars')
+    expect(marker).toContain(spillPath)
+  })
+
+  it('forwards the spill path through boundText only when truncation happens', () => {
+    const spillPath = '/tmp/cgc-session-abc/spill-stdout-1.log'
+    const oversized = boundText('x'.repeat(OUTPUT_TEXT_BUDGET + 1), {
+      budget: OUTPUT_TEXT_BUDGET,
+      originalSize: 40_000,
+      spillPath,
+    })
+
+    expect(oversized).toContain('original 40000 chars')
+    expect(oversized).toContain(spillPath)
+
+    // Small output is never marked, even when a spill path is in hand.
+    expect(boundText('plain ok', { spillPath })).toBe('plain ok')
   })
 })

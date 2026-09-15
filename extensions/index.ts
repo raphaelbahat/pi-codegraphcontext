@@ -18,7 +18,19 @@ import {
 } from './cli-gap-tools'
 import { type CgcCommandDependencies, registerCgcCommands } from './commands'
 import { type ConfigResult, loadConfig } from './config'
+import {
+  FreshnessDriftObserver,
+  type FreshnessExtensionApi,
+  getFreshnessStateStore,
+} from './freshness'
 import { type GateExtensionApi, LifecycleGate } from './gate'
+import {
+  createGuidanceReadiness,
+  type GuidanceInjectionApi,
+  GuidanceInjector,
+  type GuidanceSkillDiscoverApi,
+  GuidanceSkillExposure,
+} from './guidance'
 import { type LifecycleActionInput, LifecycleStateStore } from './lifecycle-state'
 import {
   CoverageNoteInjector,
@@ -36,7 +48,10 @@ let cachedCleanup: ProcessCleanupHandle | undefined
 let cachedDetector: WorkspaceDetector | undefined
 let cachedStateStore: LifecycleStateStore | undefined
 let cachedGate: LifecycleGate | undefined
+let cachedFreshnessObserver: FreshnessDriftObserver | undefined
 let cachedCoverageInjector: CoverageNoteInjector | undefined
+let cachedGuidanceInjector: GuidanceInjector | undefined
+let cachedGuidanceSkillExposure: GuidanceSkillExposure | undefined
 let cachedDriftSteerInjector: DriftSteerInjector | undefined
 let cachedResultAnnotator: ResultAnnotator | undefined
 let cachedStatusHud: StatusHud | undefined
@@ -111,6 +126,9 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
     cachedRunner ??= new CgcRunner({
       executable: config.cgc.executable,
       defaultTimeoutMs: config.cgc.timeoutMs,
+      spillToTemp: config.output.spillToTemp,
+      redactSecrets: config.output.redactSecrets,
+      gcfOutput: config.output.gcf,
     })
     cachedCleanup ??= installProcessCleanup(cachedRunner, {
       // ExtensionAPI's overloaded `on` is structurally wider than the minimal
@@ -148,21 +166,62 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
     // does not engage).
   }
 
+  // Task 1.3 (add-cgc-freshness-drift-sync): the freshness drift observer.
+  // Registers the harness `tool_call` subscription (docs/extensions.md — the
+  // only drift signal the harness documents; no file-edit event exists) that
+  // marks the session workspace possibly-stale on the first observed
+  // file-modifying tool call, debouncing bursts, with zero detection spawns
+  // (design D1; the state it feeds lives in the shared
+  // `getFreshnessStateStore()`). Task 2.1 wires the lazy auto-sync path:
+  // the first drift mark of a session triggers ONE background incremental
+  // `cgc index .` through the shared runner (design D2), capped at
+  // `freshness.maxSyncsPerSession` per session (design D3); the runner's
+  // dedup joins an already-in-flight identical sync instead of re-spawning,
+  // and the runner injects the worktree `--context` before dedup. Fail-closed
+  // worktree gate: a workspace the gate reports blocked records no freshness
+  // state (the same surface the spawning verbs honor), and the `tool_call`
+  // handler can never block a tool — it always returns undefined and never
+  // touches `event.input` (docs/extensions.md behavior guarantees).
+  // Registered AFTER the gate so the session cwd it captures is the gate's.
+  // Fail-open: registration must never break extension load — without an
+  // observer the freshness seams degrade to "capability not present"
+  // (freshnessFor / freshness return null); without a runner the observer
+  // degrades to observation-only (no automatic syncs ever spawn).
+  try {
+    cachedFreshnessObserver ??= new FreshnessDriftObserver({
+      store: getFreshnessStateStore(),
+      worktreeBlockFor: (cwd: string) => cachedGate?.worktreeBlockFor(cwd) ?? null,
+      runner: cachedRunner,
+      autoSync: getConfig().config.freshness.autoSync,
+      maxSyncsPerSession: getConfig().config.freshness.maxSyncsPerSession,
+      // Task 2.4: the opt-in continuous watcher (design D2 — off by default).
+      watch: getConfig().config.freshness.watch,
+      api: pi as unknown as FreshnessExtensionApi,
+    })
+    cachedFreshnessObserver.register()
+  } catch {
+    // Fail-open: observer registration must never break extension load.
+  }
+
   // Tasks 1.2–1.3 (add-cgc-status-hud): the one-line lifecycle chip. Renders
   // the active session's lifecycle state from the gate's per-session store
   // (fallback: the process-lifetime store) — subscribe-only, event-driven
   // with debounce coalescing, zero spawns and zero polling (ADR 0001 / ADR
   // 0004). Registered AFTER the gate so the gate's session_start handler runs
   // first and the per-session store exists when this HUD resolves it; without
-  // a gate the HUD still renders from the fallback store. No `freshnessFor`
-  // provider is passed while add-cgc-freshness-drift-sync is absent, so the
-  // HUD subscribes to lifecycle only and the chip omits the freshness section
-  // — the task 1.3 specified degradation (the seam exists; the freshness
-  // change wires it).
+  // a gate the HUD still renders from the fallback store. The `freshnessFor`
+  // provider is wired when the freshness drift observer (task 1.3,
+  // add-cgc-freshness-drift-sync) is registered: the chip then merges a
+  // worse-than-fresh marker from the shared freshness store (the
+  // `FreshnessHudStore` seam — subscribe + snapshot). Without the observer
+  // the provider returns null and the chip renders lifecycle-only (the
+  // specified degradation, unchanged).
   // Fail-open: registration must never break extension load.
   try {
     cachedStatusHud ??= new StatusHud({
       storeFor: (_cwd: string) => cachedGate?.lifecycleStore() ?? getLifecycleStateStore(),
+      freshnessFor: (_cwd: string) =>
+        cachedFreshnessObserver === undefined ? null : getFreshnessStateStore(),
       api: pi as unknown as StatusHudExtensionApi,
     })
     cachedStatusHud.register()
@@ -183,9 +242,12 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
   // spawn-free). Task 2.2 wires the action surface for `/cgc index`: the
   // shared runner (spawn + dedup), the change-1 auto-create consent gate, and
   // progress-state recording into the same store the status renderer reads.
-  // No freshness provider is passed while add-cgc-freshness-drift-sync is
-  // absent, so `/cgc status` omits the freshness section (specified
-  // degradation). Fail-open: registration must never break extension load —
+  // Task 1.3 (add-cgc-freshness-drift-sync) wires the read-only freshness
+  // surface for the status renderer: when the drift observer is registered
+  // it consumes the shared store's snapshot (design D5, structurally the
+  // `CgcFreshnessSummary` seam); without it the provider returns null and
+  // `/cgc status` omits the freshness section (specified degradation).
+  // Fail-open: registration must never break extension load —
   // with a broken API the extension degrades to no commands.
   try {
     const dependencies: CgcCommandDependencies = {
@@ -196,6 +258,12 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       },
       runner: cachedRunner,
       lifecycle: getConfig().config.lifecycle,
+      // Task 1.3 (add-cgc-freshness-drift-sync): the read-only freshness view
+      // for the status renderer — the shared store's snapshot, structurally
+      // the `CgcFreshnessSummary` seam. Null (observer absent) → the status
+      // omits the freshness section (specified degradation).
+      freshness: (cwd: string) =>
+        cachedFreshnessObserver === undefined ? null : getFreshnessStateStore().snapshot(cwd),
       // Task 2.3's fail-closed tool-use surface: the gate's session resolves
       // the current worktree isolation block (isolate mode only). Null for
       // `off` mode / before the first session — the spawning verbs then
@@ -276,6 +344,50 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
     cachedCoverageInjector.register()
   } catch {
     // Fail-open: injection registration must never break extension load.
+  }
+
+  // Task 2.2 (add-cgc-agent-routing-guidance): the always-on routing card.
+  // One-shot per session via `before_agent_start` — the handler appends the
+  // static, version-scoped card to the CHAINED system prompt exactly once, on
+  // the first turn where guidance is ready (ADR-0002: `cgc` available AND the
+  // workspace index exists or is being created; an index created later in the
+  // session still injects, at most once). Non-configurable by design D2: no
+  // config key and no off switch — the only removal path is disabling the
+  // extension. Reads the gate's per-session lifecycle snapshot (with the
+  // process-lifetime store as fallback) — zero spawns (ADR 0001). Fail-open:
+  // registration must never break extension load.
+  try {
+    cachedGuidanceInjector ??= new GuidanceInjector({
+      snapshotFor: (cwd: string) =>
+        cachedGate?.lifecycleStore()?.snapshot(cwd) ?? getLifecycleStateStore().snapshot(cwd),
+      api: pi as unknown as GuidanceInjectionApi,
+    })
+    cachedGuidanceInjector.register()
+  } catch {
+    // Fail-open: guidance injection registration must never break extension load.
+  }
+
+  // Task 2.4 (add-cgc-agent-routing-guidance): the opt-in routing skill. The
+  // deep skill ships inside the package (`skills/cgc-routing`) but is offered
+  // to the agent ONLY when `guidance.routingSkill` is set (default false) AND
+  // guidance is ready. Exposure is a `resources_discover` contribution,
+  // evaluated at discovery time (startup/reload) against the same shared
+  // readiness predicate as the always-on card; a readiness transition later in
+  // a session is never applied retroactively. Reads the gate's per-session
+  // lifecycle snapshot (process-lifetime store as fallback) — zero spawns
+  // (ADR 0001). Fail-open: registration must never break extension load.
+  try {
+    cachedGuidanceSkillExposure ??= new GuidanceSkillExposure({
+      enabled: getConfig().config.guidance.routingSkill,
+      readiness: createGuidanceReadiness(
+        (cwd: string) =>
+          cachedGate?.lifecycleStore()?.snapshot(cwd) ?? getLifecycleStateStore().snapshot(cwd),
+      ),
+      api: pi as unknown as GuidanceSkillDiscoverApi,
+    })
+    cachedGuidanceSkillExposure.register()
+  } catch {
+    // Fail-open: skill exposure registration must never break extension load.
   }
 
   // Task 2.1 (add-cgc-proactive-context-injection): the opt-in drift-steer

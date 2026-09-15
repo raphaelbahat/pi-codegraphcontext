@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_CLEANUP_SIGNALS, installProcessCleanup } from './cleanup'
@@ -8,6 +8,31 @@ import { CgcRunner } from './runner'
 
 const BUN = process.execPath
 const HANG_SCRIPT = 'setInterval(() => {}, 60_000)'
+const SPILL_SCRIPT = 'process.stdout.write("x".repeat(1024 * 1024))'
+
+/** Session spill directories present under a spill base (task 1.4 naming). */
+function spillDirs(base: string): string[] {
+  return readdirSync(base).filter((entry) => entry.startsWith('pi-cgc-spill'))
+}
+
+/** Force a truncation+spill and return the spill base directory. */
+async function withSpilledOutput(
+  workspace: string,
+  spillBase: string,
+  runner: CgcRunner,
+): Promise<void> {
+  const result = await runner.run(workspace, {
+    args: ['-e', SPILL_SCRIPT],
+    env: {},
+    maxOutputBytes: 2048,
+  })
+  if (!result.stdout.includes('spilled to')) {
+    throw new Error(`expected a spill marker, got: ${result.stdout.slice(0, 200)}`)
+  }
+  if (spillDirs(spillBase).length !== 1) {
+    throw new Error(`expected exactly one spill directory in ${spillBase}`)
+  }
+}
 
 function makeWorkspace(): string {
   return mkdtempSync(join(tmpdir(), 'cgc-cleanup-test-'))
@@ -206,5 +231,87 @@ describe('installProcessCleanup', () => {
     })
     handle.dispose()
     handle.dispose()
+  })
+})
+
+describe('spill cleanup through every session teardown path (task 2.3)', () => {
+  it('removes spill files on the session_shutdown graceful path', async () => {
+    const workspace = makeWorkspace()
+    const spillBase = mkdtempSync(join(tmpdir(), 'cgc-cleanup-spill-'))
+    try {
+      const runner = new CgcRunner({
+        executable: BUN,
+        spillToTemp: true,
+        spillBaseDir: spillBase,
+      })
+      const api = new FakeExtensionApi()
+      const handle = installProcessCleanup(runner, { api })
+
+      await withSpilledOutput(workspace, spillBase, runner)
+
+      api.emitShutdown()
+      // killAll resolves on a microtask when nothing is in flight; give the
+      // record/cleanup continuation a tick to run.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(spillDirs(spillBase).length).toBe(0)
+      expect(handle.events.some((event) => event.path === 'session-shutdown')).toBe(true)
+      handle.dispose()
+    } finally {
+      cleanupWorkspace(workspace)
+      rmSync(spillBase, { recursive: true, force: true })
+    }
+  })
+
+  it('removes spill files on the synchronous process exit path', async () => {
+    const workspace = makeWorkspace()
+    const spillBase = mkdtempSync(join(tmpdir(), 'cgc-cleanup-spill-'))
+    try {
+      const runner = new CgcRunner({
+        executable: BUN,
+        spillToTemp: true,
+        spillBaseDir: spillBase,
+      })
+      const fakeProcess = new FakeProcess()
+      const handle = installProcessCleanup(runner, { processObject: fakeProcess })
+
+      await withSpilledOutput(workspace, spillBase, runner)
+
+      fakeProcess.emit('exit', 0)
+
+      expect(spillDirs(spillBase).length).toBe(0)
+      expect(handle.events.some((event) => event.path === 'process-exit')).toBe(true)
+      handle.dispose()
+    } finally {
+      cleanupWorkspace(workspace)
+      rmSync(spillBase, { recursive: true, force: true })
+    }
+  })
+
+  it('removes spill files on the intercepted signal path', async () => {
+    const workspace = makeWorkspace()
+    const spillBase = mkdtempSync(join(tmpdir(), 'cgc-cleanup-spill-'))
+    try {
+      const runner = new CgcRunner({
+        executable: BUN,
+        spillToTemp: true,
+        spillBaseDir: spillBase,
+      })
+      const fakeProcess = new FakeProcess()
+      const handle = installProcessCleanup(runner, { processObject: fakeProcess })
+
+      await withSpilledOutput(workspace, spillBase, runner)
+
+      fakeProcess.emit('SIGINT')
+
+      expect(spillDirs(spillBase).length).toBe(0)
+      expect(handle.events).toContainEqual(
+        expect.objectContaining({ path: 'signal', signal: 'SIGINT' }),
+      )
+      handle.dispose()
+    } finally {
+      cleanupWorkspace(workspace)
+      rmSync(spillBase, { recursive: true, force: true })
+    }
   })
 })

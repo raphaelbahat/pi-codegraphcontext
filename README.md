@@ -4,6 +4,13 @@ Pi coding-agent extension for CodeGraphContext (CGC). It wraps the `cgc`
 binary for agent use, covering the index lifecycle gate, freshness sync, agent
 routing guidance, status surfaces, and the CLI-gap tools below.
 
+## Documentation
+
+- [CGC agent guide](docs/agent-guide.md) — the intent-first reference for
+  choosing between the CGC MCP graph tools, built-in search/read, `/cgc`
+  commands, and the CLI-gap tools. It also covers the configuration/consent
+  overview, backend caveats, and troubleshooting.
+
 ## Configuration
 
 Configuration is resolved in this order (each layer overrides the previous one):

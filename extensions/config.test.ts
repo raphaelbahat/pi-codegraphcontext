@@ -45,6 +45,7 @@ describe('loadConfig', () => {
     expect(result.config.output.redactSecrets).toBe(true)
     expect(result.config.output.gcf).toBe(false)
     expect(result.config.tools.cliGap.enabled).toBe(true)
+    expect(result.config.guidance.routingSkill).toBe(false)
     expect(result.warnings).toEqual([])
     for (const key of ENV_KEYS) {
       expect(result.sources[key]).toBe('default')
@@ -824,6 +825,75 @@ describe('loadConfig', () => {
     }
   })
 
+  it('defaults guidance.routingSkill to false (always-on card stays non-configurable) with env override and invalid fallback', () => {
+    const defaults = loadConfig({ env: cleanEnv(), cwd: '/nonexistent', homeDir: '/nonexistent' })
+    expect(defaults.config.guidance.routingSkill).toBe(false)
+    expect(defaults.sources['guidance.routingSkill']).toBe('default')
+    expect(defaults.warnings).toEqual([])
+
+    const on = loadConfig({
+      env: cleanEnv(envWith({ 'guidance.routingSkill': 'true' })),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(on.config.guidance.routingSkill).toBe(true)
+    expect(on.sources['guidance.routingSkill']).toBe('env')
+    expect(on.warnings).toEqual([])
+
+    const invalid = loadConfig({
+      env: cleanEnv(envWith({ 'guidance.routingSkill': 'maybe' })),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(invalid.config.guidance.routingSkill).toBe(false)
+    expect(invalid.sources['guidance.routingSkill']).toBe('default')
+    expect(invalid.warnings.join('\n')).toContain('guidance.routingSkill')
+  })
+
+  it('reads guidance.routingSkill from config files with env override precedence', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cgc-cfg-guidance-home-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'cgc-cfg-guidance-proj-'))
+    try {
+      mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+      writeFileSync(
+        join(home, '.pi', 'agent', 'cgc.json'),
+        JSON.stringify({ guidance: { routingSkill: true } }),
+      )
+
+      const fromFile = loadConfig({ env: cleanEnv(), cwd, homeDir: home })
+      expect(fromFile.config.guidance.routingSkill).toBe(true)
+      expect(fromFile.sources['guidance.routingSkill']).toBe('config-file')
+      expect(fromFile.warnings).toEqual([])
+
+      const fromEnv = loadConfig({
+        env: cleanEnv(envWith({ 'guidance.routingSkill': 'false' })),
+        cwd,
+        homeDir: home,
+      })
+      expect(fromEnv.config.guidance.routingSkill).toBe(false)
+      expect(fromEnv.sources['guidance.routingSkill']).toBe('env')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  })
+
+  it('warns on a malformed guidance section while keeping the default', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cgc-cfg-guidance-bad-home-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'cgc-cfg-guidance-bad-proj-'))
+    try {
+      mkdirSync(join(cwd, '.pi'), { recursive: true })
+      writeFileSync(join(cwd, '.pi', 'cgc.json'), JSON.stringify({ guidance: 'nope' }))
+      const result = loadConfig({ env: cleanEnv(), cwd, homeDir: home })
+      expect(result.config.guidance.routingSkill).toBe(false)
+      expect(result.sources['guidance.routingSkill']).toBe('default')
+      expect(result.warnings.join('\n')).toContain('"guidance" section')
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('warns on malformed tools sections while keeping the default', () => {
     const home = mkdtempSync(join(tmpdir(), 'cgc-cfg-tools-bad-home-'))
     const cwd = mkdtempSync(join(tmpdir(), 'cgc-cfg-tools-bad-proj-'))
@@ -854,6 +924,7 @@ describe('loadConfig', () => {
           freshness: { watch: 'maybe', autoSync: 'nope', maxSyncsPerSession: 1.5 },
           output: { maxBytes: -1, spillToTemp: 'maybe', redactSecrets: 'nope', gcf: 'nope' },
           tools: { cliGap: { enabled: 'nope' } },
+          guidance: { routingSkill: 'nope' },
           unknownSection: { nested: true },
         }),
       )
@@ -876,6 +947,7 @@ describe('loadConfig', () => {
       expect(result.config.output.redactSecrets).toBe(true)
       expect(result.config.output.gcf).toBe(false)
       expect(result.config.tools.cliGap.enabled).toBe(true)
+      expect(result.config.guidance.routingSkill).toBe(false)
       const joined = result.warnings.join('\n')
       expect(joined).toContain('cgc.executable')
       expect(joined).toContain('cgc.timeoutMs')
@@ -892,6 +964,7 @@ describe('loadConfig', () => {
       expect(joined).toContain('output.redactSecrets')
       expect(joined).toContain('output.gcf')
       expect(joined).toContain('tools.cliGap.enabled')
+      expect(joined).toContain('guidance.routingSkill')
     } finally {
       rmSync(cwd, { recursive: true, force: true })
     }

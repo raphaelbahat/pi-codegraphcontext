@@ -129,6 +129,18 @@ export interface ToolsConfig {
   }
 }
 
+/** Agent-routing guidance config (design D2 of add-cgc-agent-routing-guidance). */
+export interface GuidanceConfig {
+  /**
+   * Opt-in routing skill (default false): when enabled and guidance is ready,
+   * the deeper routing skill is offered to the agent at skill-discovery time.
+   * There is deliberately no key controlling the always-on guideline card —
+   * that layer is non-configurable by design, so the only removal path is
+   * disabling/uninstalling the extension.
+   */
+  routingSkill: boolean
+}
+
 export interface ExtensionConfig {
   cgc: CgcConfig
   lifecycle: LifecycleConfig
@@ -137,6 +149,7 @@ export interface ExtensionConfig {
   freshness: FreshnessConfig
   output: OutputConfig
   tools: ToolsConfig
+  guidance: GuidanceConfig
 }
 
 export type ConfigSource = 'default' | 'config-file' | 'env'
@@ -159,6 +172,7 @@ export type ConfigKey =
   | 'output.redactSecrets'
   | 'output.gcf'
   | 'tools.cliGap.enabled'
+  | 'guidance.routingSkill'
 
 export interface ConfigResult {
   config: ExtensionConfig
@@ -211,6 +225,9 @@ export const DEFAULT_CONFIG: ExtensionConfig = {
       enabled: true,
     },
   },
+  guidance: {
+    routingSkill: false,
+  },
 }
 
 /** Environment-variable overrides per config key (design D5). */
@@ -232,6 +249,7 @@ export const CONFIG_ENV_VARS: Record<ConfigKey, string> = {
   'output.redactSecrets': 'CGC_OUTPUT_REDACT_SECRETS',
   'output.gcf': 'CGC_OUTPUT_GCF',
   'tools.cliGap.enabled': 'CGC_TOOLS_CLI_GAP_ENABLED',
+  'guidance.routingSkill': 'CGC_GUIDANCE_ROUTING_SKILL',
 }
 
 const CONFIG_KEYS: readonly ConfigKey[] = Object.keys(CONFIG_ENV_VARS) as ConfigKey[]
@@ -431,6 +449,17 @@ function readConfigFile(
     }
   }
 
+  const guidance = parsed.guidance
+  if (guidance !== undefined) {
+    if (isPlainObject(guidance)) {
+      if (guidance.routingSkill !== undefined) {
+        values['guidance.routingSkill'] = guidance.routingSkill
+      }
+    } else {
+      warnings.push(`${label}: ignoring "guidance" section in ${path} (expected an object)`)
+    }
+  }
+
   return values
 }
 
@@ -582,6 +611,19 @@ function applyFileLayer(
         }
         break
       }
+      case 'guidance.routingSkill': {
+        const parsed =
+          typeof raw === 'boolean' ? raw : typeof raw === 'string' ? parseBoolean(raw) : undefined
+        if (parsed !== undefined) {
+          config.guidance.routingSkill = parsed
+          sources[key] = 'config-file'
+        } else {
+          warnings.push(
+            `${label}: ignoring invalid guidance.routingSkill value ${JSON.stringify(raw)}`,
+          )
+        }
+        break
+      }
     }
   }
 }
@@ -624,7 +666,8 @@ function applyEnvLayer(
       case 'output.spillToTemp':
       case 'output.redactSecrets':
       case 'output.gcf':
-      case 'tools.cliGap.enabled': {
+      case 'tools.cliGap.enabled':
+      case 'guidance.routingSkill': {
         const parsed = parseBoolean(raw)
         if (parsed !== undefined) {
           if (key === 'lifecycle.autoCreate') config.lifecycle.autoCreate = parsed
@@ -638,7 +681,8 @@ function applyEnvLayer(
           else if (key === 'output.spillToTemp') config.output.spillToTemp = parsed
           else if (key === 'output.redactSecrets') config.output.redactSecrets = parsed
           else if (key === 'tools.cliGap.enabled') config.tools.cliGap.enabled = parsed
-          else config.output.gcf = parsed
+          else if (key === 'output.gcf') config.output.gcf = parsed
+          else config.guidance.routingSkill = parsed
           sources[key] = 'env'
         } else {
           warnings.push(

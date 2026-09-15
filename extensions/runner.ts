@@ -16,7 +16,13 @@
 // empty cwd), which are programming errors, not cgc failures.
 
 import { type ChildProcess, spawn } from 'node:child_process'
-import { applyOutputPolicy, OUTPUT_POLICY_MAX_BYTES } from './output-policy'
+import { tmpdir } from 'node:os'
+import {
+  applyOutputPolicy,
+  type CgcOutputPolicyOptions,
+  OUTPUT_POLICY_MAX_BYTES,
+} from './output-policy'
+import { SpillSession, type SpillWriter } from './spill'
 
 /**
  * Structured outcome codes for a cgc invocation.
@@ -92,6 +98,15 @@ export interface CgcCommandResult {
    * head+tail reconstruction is missing middle bytes (design D2).
    */
   truncated: boolean
+  /**
+   * Policy-pipeline errors recorded while applying the uniform output policy
+   * to this invocation's streams (task 1.7 fail-open semantics). Each entry
+   * names the failing stage and reason; their presence NEVER changes `ok` or
+   * `code` — the invocation itself succeeded or failed on its own merits, and
+   * the delivered `stdout`/`stderr` are the best-effort output. Omitted when no
+   * stage reported an error.
+   */
+  policyErrors?: string[]
   durationMs: number
   argv: string[]
   /** The workspace cwd the command ran in (the Pi session cwd). */
@@ -118,6 +133,13 @@ const LOCK_PATTERN = /\block(ed|ing)\b/i
 
 const DEDUP_KEY_SEPARATOR = '\u0000'
 const ARG_SEPARATOR = '\u0001'
+
+/**
+ * The environment variable CGC reads to select its output format (design D5,
+ * task 1.6). Setting it to `gcf` asks for the compact format; CGC falls back
+ * to JSON on its own when `gcf-python` is unavailable.
+ */
+const CGC_OUTPUT_FORMAT_ENV = 'CGC_OUTPUT_FORMAT'
 
 /**
  * Bounded byte buffer keeping the HEAD and TAIL of a stream (design D2 of
@@ -240,6 +262,15 @@ interface LiveChild {
   markCancelled: () => void
 }
 
+/**
+ * The runner's output-policy function signature (design D1): strip control
+ * sequences, redact secrets per `redact`, and bound to `budget`. Exposed as a
+ * seam so tests can inject a throwing stage and prove the runner's fail-open
+ * containment (task 2.2); production wiring always uses
+ * {@link applyOutputPolicy}.
+ */
+export type CgcOutputPolicyFn = (text: string, options: CgcOutputPolicyOptions) => string
+
 export interface CgcRunnerOptions {
   /** cgc binary to spawn; resolved against PATH when not absolute. */
   executable?: string
@@ -254,6 +285,42 @@ export interface CgcRunnerOptions {
    * {@link CgcRunner.setContextResolver}.
    */
   contextResolver?: RunnerContextResolver
+  /**
+   * Spill the FULL captured output to a session-scoped file under the OS temp
+   * location when the delivered output is truncated (design D3, task 1.4).
+   * Default false at the runner level; the extension passes
+   * `config.output.spillToTemp` (default true). Spill files are removed by
+   * {@link CgcRunner.cleanupSpills}, which the session teardown paths invoke.
+   */
+  spillToTemp?: boolean
+  /**
+   * Whether the redaction stage of the output policy runs (default true —
+   * secret hygiene is on unless a caller explicitly opts out). The extension
+   * passes `config.output.redactSecrets` (default true); the `output.redactSecrets`
+   * opt-out reaches the pipeline through this seam (task 1.5).
+   */
+  redactSecrets?: boolean
+  /**
+   * Base directory for the session spill directory (test seam); defaults to
+   * the OS temp location. Spill files are NEVER placed in the workspace.
+   */
+  spillBaseDir?: string
+  /**
+   * Whether to request CGC's compact GCF output format by setting
+   * `CGC_OUTPUT_FORMAT=gcf` on every invocation (design D5, task 1.6). The
+   * extension passes `config.output.gcf` (default false — opt-in). No
+   * availability probing: CGC's own documented fallback to JSON when
+   * `gcf-python` is absent keeps the invocation succeeding.
+   */
+  gcfOutput?: boolean
+  /**
+   * Test seam (task 2.2): replace the uniform output policy pipeline. The
+   * default IS {@link applyOutputPolicy}; supplying a throwing function
+   * exercises the fail-open wrapper — the invocation still resolves with
+   * best-effort (retained) output and never fails because a policy stage
+   * threw. Production wiring never sets it.
+   */
+  outputPolicy?: CgcOutputPolicyFn
 }
 
 /**
@@ -266,11 +333,25 @@ export class CgcRunner {
   private contextResolver: RunnerContextResolver | null
   private readonly inflight = new Map<string, Promise<CgcCommandResult>>()
   private readonly liveChildren = new Set<LiveChild>()
+  private readonly spillToTemp: boolean
+  private readonly spillBaseDir: string
+  private readonly redactSecrets: boolean
+  private readonly gcfOutput: boolean
+  private readonly outputPolicy: CgcOutputPolicyFn
+  private spillSession: SpillSession | null = null
 
   constructor(options: CgcRunnerOptions = {}) {
     this.executable = options.executable ?? 'cgc'
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 30_000
     this.contextResolver = options.contextResolver ?? null
+    this.spillToTemp = options.spillToTemp ?? false
+    this.spillBaseDir = options.spillBaseDir ?? tmpdir()
+    // Default on: the `output.redactSecrets` opt-out is the ONLY way off.
+    this.redactSecrets = options.redactSecrets ?? true
+    // Default off: GCF passthrough is opt-in through `output.gcf`.
+    this.gcfOutput = options.gcfOutput ?? false
+    // Default to the real pipeline; only the task 2.2 test seam replaces it.
+    this.outputPolicy = options.outputPolicy ?? applyOutputPolicy
   }
 
   /** The binary this runner spawns (diagnostic surfaces only). */
@@ -285,6 +366,19 @@ export class CgcRunner {
    */
   setContextResolver(resolver: RunnerContextResolver | null): void {
     this.contextResolver = resolver
+  }
+
+  /**
+   * The child environment for one invocation: the caller's environment (or the
+   * process default) plus CGC's output-format request when `output.gcf` is on
+   * (design D5, task 1.6). The runner never probes for `gcf-python` — CGC
+   * performs its own documented JSON fallback, so the invocation always
+   * succeeds regardless of what the installed CGC can produce.
+   */
+  private childEnv(base: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
+    const env = base ?? process.env
+    if (!this.gcfOutput) return env
+    return { ...env, [CGC_OUTPUT_FORMAT_ENV]: 'gcf' }
   }
 
   /**
@@ -394,6 +488,29 @@ export class CgcRunner {
     return killed
   }
 
+  /**
+   * Remove the session's spill directory and every file in it (design D3).
+   * Synchronous and fail-open, so every teardown path — the `session_shutdown`
+   * hook (after `killAll`), the process `exit` handler, and signal
+   * interception — can call it. Idempotent; a later command recreates the
+   * directory lazily.
+   */
+  cleanupSpills(): void {
+    const session = this.spillSession
+    this.spillSession = null
+    session?.remove()
+  }
+
+  /**
+   * A spill writer for one capture stream when spill is enabled, else
+   * undefined. The session (and its directory) is created lazily on first use.
+   */
+  private spillWriter(label: string, thresholdBytes: number): SpillWriter | undefined {
+    if (!this.spillToTemp) return undefined
+    this.spillSession ??= new SpillSession({ baseDir: this.spillBaseDir })
+    return this.spillSession.createWriter(label, thresholdBytes)
+  }
+
   private runOnce(cwd: string, options: CgcRunOptions): Promise<CgcCommandResult> {
     const startedAt = Date.now()
     const argv = [...options.args]
@@ -414,8 +531,13 @@ export class CgcRunner {
     const policyBudget = Math.min(maxOutputBytes, OUTPUT_POLICY_MAX_BYTES)
 
     return new Promise((resolve) => {
-      const stdoutBuffer = new HeadTailBuffer(maxOutputBytes)
-      const stderrBuffer = new HeadTailBuffer(maxOutputBytes)
+      // Spill writers see EVERY chunk as it arrives (design D3); they are
+      // created only when spill is enabled, and never touch disk unless the
+      // stream is actually truncated.
+      const stdoutSpill = this.spillWriter('stdout', policyBudget)
+      const stderrSpill = this.spillWriter('stderr', policyBudget)
+      const stdoutBuffer = new HeadTailBuffer(maxOutputBytes, stdoutSpill?.sink)
+      const stderrBuffer = new HeadTailBuffer(maxOutputBytes, stderrSpill?.sink)
       let settled = false
       let killReason: 'TIMEOUT' | 'CANCELLED' | undefined
       let child: ChildProcess | undefined
@@ -438,15 +560,38 @@ export class CgcRunner {
         if (timer !== undefined) clearTimeout(timer)
         signal?.removeEventListener('abort', onAbort)
         if (entry !== undefined) this.liveChildren.delete(entry)
+        const stdoutPolicy = applyCapturePolicy(
+          stdoutBuffer,
+          policyBudget,
+          'command',
+          this.redactSecrets,
+          this.outputPolicy,
+          stdoutSpill,
+        )
+        const stderrPolicy = applyCapturePolicy(
+          stderrBuffer,
+          policyBudget,
+          'command',
+          this.redactSecrets,
+          this.outputPolicy,
+          stderrSpill,
+        )
+        // Every policy-stage error is recorded on the result (task 1.7): the
+        // invocation still resolves with best-effort delivered output and
+        // never fails because a stage (redaction, spill write, stripping) threw.
+        const policyErrors = [stdoutPolicy.error, stderrPolicy.error].filter(
+          (entry): entry is string => entry !== undefined,
+        )
         resolve({
           ok: code === 'OK',
           code,
           message,
           exitCode,
           signal: signalName,
-          stdout: applyCapturePolicy(stdoutBuffer, policyBudget),
-          stderr: applyCapturePolicy(stderrBuffer, policyBudget),
+          stdout: stdoutPolicy.text,
+          stderr: stderrPolicy.text,
           truncated: stdoutBuffer.truncated || stderrBuffer.truncated,
+          ...(policyErrors.length > 0 ? { policyErrors } : {}),
           durationMs: Date.now() - startedAt,
           argv,
           cwd,
@@ -474,7 +619,7 @@ export class CgcRunner {
         ]
         const spawned = spawn(this.executable, argv, {
           cwd,
-          env: options.env ?? process.env,
+          env: this.childEnv(options.env),
           stdio,
           shell: false,
           windowsHide: true,
@@ -574,20 +719,50 @@ export class CgcRunner {
  * retention or the bound dropped). Applied here, in the runner, before any
  * consumer receives results.
  *
- * Fail-open (task 1.7 formalizes the policy-error recording): a pipeline
- * stage defect degrades to best-effort delivery of the retained text — the
- * invocation itself never fails because a policy stage threw.
+ * Fail-open (task 1.7): a pipeline stage defect degrades to best-effort
+ * delivery of the retained text — the invocation itself never fails because a
+ * policy stage threw — and the stage error is RETURNED so the runner can
+ * record it on the invocation result (`policyErrors`). A spill write failure
+ * is reported the same way: the marker stands alone without a path, the
+ * delivered output is still bounded, and the error is recorded.
  */
-function applyCapturePolicy(buffer: HeadTailBuffer, budget: number): string {
+function applyCapturePolicy(
+  buffer: HeadTailBuffer,
+  budget: number,
+  label: string,
+  redact: boolean,
+  policy: CgcOutputPolicyFn,
+  spill?: SpillWriter,
+): { text: string; error?: string } {
   const text = buffer.text()
   try {
-    return applyOutputPolicy(text, {
+    // Truncation is exactly the condition under which `boundText` rewrites the
+    // text (the delivered length exceeds the budget). Only then is the spill
+    // kept and its path named; an untruncated stream's writer is discarded so
+    // no temp file is left behind.
+    const truncated = text.length > budget
+    let spillPath: string | undefined
+    if (truncated) {
+      spillPath = spill?.commit()
+    } else {
+      spill?.discard()
+    }
+    const applied = policy(text, {
       budget,
-      label: 'command',
+      label,
       originalSize: buffer.totalBytes,
+      redact,
+      ...(spillPath !== undefined ? { spillPath } : {}),
     })
-  } catch {
-    return text
+    // A sink-time spill failure is recorded without failing the policy: the
+    // marker already carries no path, so the delivered output is unchanged.
+    const spillError = spill?.error
+    return spillError === null || spillError === undefined
+      ? { text: applied }
+      : { text: applied, error: `spill write failed: ${spillError}` }
+  } catch (error) {
+    spill?.discard()
+    return { text, error: `output policy failed: ${errorMessage(error)}` }
   }
 }
 

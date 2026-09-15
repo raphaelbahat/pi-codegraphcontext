@@ -69,9 +69,25 @@ export function stripControlSequences(text: string): string {
   return text.replace(CONTROL_SEQUENCE_PATTERN, '').replace(C1_CONTROL_PATTERN, '')
 }
 
-/** Explicit truncation marker naming the original size (design D4). */
-export function truncationMarker(originalLength: number, label = 'command'): string {
-  return `\n… [cgc ${label} output truncated, original ${originalLength} chars]`
+/**
+ * Explicit truncation marker naming the original size (design D2), and the
+ * spill file path when one was written (design D3).
+ *
+ * Task 1.3 (add-cgc-output-token-economy): the marker also names the spill
+ * file path when one was written. `spillPath` is supplied by the runner only
+ * after a spill write succeeded (task 1.4), so an absent path means either
+ * spill is disabled or the write failed — in both cases the marker stands
+ * alone without a path (the spec's "Spill disabled" and fail-open scenarios).
+ */
+export function truncationMarker(
+  originalLength: number,
+  label = 'command',
+  spillPath?: string,
+): string {
+  const base = `\n… [cgc ${label} output truncated, original ${originalLength} chars`
+  return spillPath === undefined || spillPath === ''
+    ? `${base}]`
+    : `${base}; full output spilled to ${spillPath}]`
 }
 
 // ---------------------------------------------------------------------------
@@ -136,9 +152,10 @@ function looksHighEntropy(candidate: string): boolean {
 /** Options controlling the secret-redaction stage. */
 export interface CgcRedactOptions {
   /**
-   * Master switch for the redaction stage (default on). Task 1.2 wires the
-   * `output.redactSecrets` config key here; until then the default stands —
-   * redaction is on unless a caller explicitly turns it off.
+   * Master switch for the redaction stage (default on). The
+   * `output.redactSecrets` config key reaches this seam through the runner's
+   * `redactSecrets` option (task 1.5); the default stands when no caller
+   * overrides it — redaction is on unless explicitly turned off.
    */
   enabled?: boolean
 }
@@ -163,7 +180,7 @@ export function redactSecrets(text: string, options: CgcRedactOptions = {}): str
 }
 
 // ---------------------------------------------------------------------------
-// Bounding (head+tail with an explicit marker, design D2/D4)
+// Bounding (head+tail with an explicit marker, design D2)
 // ---------------------------------------------------------------------------
 
 /** Options controlling the shared size-bound (design D4). */
@@ -185,6 +202,13 @@ export interface CgcOutputBoundOptions {
    * that was dropped by capture retention, not just by this stage.
    */
   originalSize?: number
+  /**
+   * Path of the session-scoped spill file holding the FULL output, named in
+   * the truncation marker when present (design D3). Supplied by the runner
+   * only once a spill write has succeeded (task 1.4); when omitted (spill
+   * disabled, or the write failed) the marker carries no path.
+   */
+  spillPath?: string
 }
 
 /**
@@ -198,22 +222,14 @@ export interface CgcOutputBoundOptions {
 export function boundText(text: string, options: CgcOutputBoundOptions = {}): string {
   const budget = options.budget ?? OUTPUT_TEXT_BUDGET
   if (text.length <= budget) return text
-  const marker = truncationMarker(options.originalSize ?? text.length, options.label ?? 'command')
+  const marker = truncationMarker(
+    options.originalSize ?? text.length,
+    options.label ?? 'command',
+    options.spillPath,
+  )
   if (budget < marker.length) return marker
   const headLength = Math.floor((budget - marker.length) / 2)
   return `${text.slice(0, headLength)}${marker}${text.slice(text.length - (budget - marker.length - headLength))}`
-}
-
-/**
- * The renderer-level convenience pipeline (design D4): strip control
- * sequences, then size-bound with head+tail preservation and an explicit
- * truncation marker. The slash-commands renderer consumes this directly for
- * its own text (status) and for presentational wrapping of already-pipelined
- * command output (doctor/report, task 2.4). Task 2.1 retires the per-surface
- * bounding — until then this function keeps the renderer's behavior exactly.
- */
-export function renderCommandText(text: string, options: CgcOutputBoundOptions = {}): string {
-  return boundText(stripControlSequences(text), options)
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +239,10 @@ export function renderCommandText(text: string, options: CgcOutputBoundOptions =
 /** Options for the runner's uniform output policy (design D1). */
 export interface CgcOutputPolicyOptions extends CgcOutputBoundOptions {
   /**
-   * Whether the redaction stage is enabled (default on). Task 1.2 wires the
-   * `output.redactSecrets` config key here.
+   * Whether the redaction stage is enabled (default on). Task 1.5 wires the
+   * `output.redactSecrets` config key through the runner's `redactSecrets`
+   * option into this seam; `false` leaves values as `cgc` produced them while
+   * stripping and bounding still apply (the spec's opt-out scenario).
    */
   redact?: boolean
 }

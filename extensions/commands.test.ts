@@ -11,7 +11,6 @@ import type {
   CgcStatusView,
 } from './commands'
 import {
-  boundText,
   buildStatusView,
   CGC_COMMAND_NAME,
   CGC_REPORT_FILENAME,
@@ -31,11 +30,9 @@ import {
   indexStartedNotice,
   indexUnknownOptionNotice,
   lifecycleStateLabel,
-  OUTPUT_TEXT_BUDGET,
   parseIndexOptions,
   REPORT_OUTPUT_FLAG,
   registerCgcCommands,
-  renderCommandText,
   renderStatusText,
   reportArgs,
   reportStartedNotice,
@@ -43,16 +40,20 @@ import {
   reportWriteConsentMessage,
   reportWriteDeclinedNotice,
   resolveReportDestination,
-  stripControlSequences,
   syncDeclinedNotice,
   syncJoinInFlightNotice,
   syncStartedNotice,
   syncUnknownArgumentNotice,
   timeAgo,
-  truncationMarker,
   usageText,
 } from './commands'
 import type { LifecycleAction, LifecycleActionInput, LifecycleSnapshot } from './lifecycle-state'
+import {
+  boundText,
+  OUTPUT_TEXT_BUDGET,
+  stripControlSequences,
+  truncationMarker,
+} from './output-policy'
 import { type CgcCommandResult, CgcRunner } from './runner'
 import type { WorktreeMapResolutionStatus } from './worktree'
 
@@ -631,12 +632,12 @@ describe('/cgc status renderer', () => {
     expect(lifecycleStateLabel(null)).toBe('unavailable')
   })
 
-  it('strips control sequences from embedded state detail (pre-ADR-0005 discipline)', () => {
+  it('consumes already-policed state detail without re-applying hygiene (task 2.1, ADR-0005)', () => {
     const view: CgcStatusView = {
       cwd: '/ws',
       snapshot: makeSnapshot({
-        reason: '\u001b[31mred\u001b[0m probe outcome',
-        lastAction: makeAction({ detail: '\u001b]0;title\u0007bell\u001b[K', kind: 'gate-failed' }),
+        reason: 'red probe outcome',
+        lastAction: makeAction({ detail: 'bell', kind: 'gate-failed' }),
       }),
       workInFlight: false,
       freshness: null,
@@ -644,13 +645,14 @@ describe('/cgc status renderer', () => {
 
     const text = renderStatusText(view)
 
-    expect(text).not.toContain('\u001b')
+    // The renderer no longer strips or bounds: the runner policy already
+    // cleaned the probe streams these details derive from, so detail renders
+    // verbatim (no private output handling — ADR-0005).
     expect(text).toContain('red probe outcome')
     expect(text).toContain('bell')
-    expect(stripControlSequences('a\u001b[31m\u001b[0m b\t\n')).toBe('a b\t\n')
   })
 
-  it('bounds pathological output with a head+tail truncation marker', () => {
+  it('renders embedded state detail verbatim, with no renderer-level truncation marker', () => {
     const huge = 'x'.repeat(OUTPUT_TEXT_BUDGET * 2)
     const view: CgcStatusView = {
       cwd: '/ws',
@@ -664,10 +666,11 @@ describe('/cgc status renderer', () => {
 
     const text = renderStatusText(view)
 
-    expect(text.length).toBeLessThanOrEqual(OUTPUT_TEXT_BUDGET)
-    expect(text).toContain('truncated')
     expect(text.startsWith('CGC status — /ws')).toBe(true)
-    expect(boundText('ok')).toBe('ok')
+    // Bounding belongs to the runner's shared policy (task 2.1); this passive
+    // renderer adds no head+tail marker of its own.
+    expect(text).not.toContain('truncated')
+    expect(text).toContain(huge)
   })
 
   it('builds the view from the dependency surface, reading only snapshot and in-flight', () => {
@@ -758,7 +761,7 @@ describe('/cgc status renderer', () => {
 // Shared output-hygiene renderer (task 1.3)
 // ---------------------------------------------------------------------------
 
-describe('shared output-hygiene renderer (task 1.3)', () => {
+describe('shared output-policy helpers (add-cgc-output-token-economy task 1.3)', () => {
   it('strips every ESC-led sequence family and keeps layout whitespace', () => {
     // CSI (SGR), OSC (terminated by BEL), and a trailing single-character
     // escape — all removed; tab/newline/CR are layout and survive.
@@ -804,47 +807,6 @@ describe('shared output-hygiene renderer (task 1.3)', () => {
     const bounded = boundText('abcdefghijklmnopqrst', { budget: 10, label: 'doctor' })
 
     expect(bounded).toBe(truncationMarker(20, 'doctor'))
-  })
-
-  it('renders doctor output through the shared pipeline: stripped, bounded, labelled', () => {
-    const pad = 'x'.repeat(OUTPUT_TEXT_BUDGET)
-    const doctorOut = `\u001b[1m\u001b[34mcgc doctor\u001b[0m — \u001b[32mhealthy\u001b[0m\nscan complete\n${pad}`
-    const rendered = renderCommandText(doctorOut, { label: 'doctor' })
-
-    expect(rendered).not.toContain('\u001b')
-    expect(rendered).toContain('cgc doctor')
-    expect(rendered).toContain('healthy')
-    expect(rendered).toContain('scan complete')
-    expect(rendered.length).toBeLessThanOrEqual(OUTPUT_TEXT_BUDGET)
-    expect(rendered).toContain('cgc doctor output truncated')
-    expect(rendered.endsWith('x')).toBe(true)
-  })
-
-  it('renders report output through the shared pipeline: stripped, bounded, labelled', () => {
-    const pad = 'y'.repeat(OUTPUT_TEXT_BUDGET)
-    const reportOut = `writing report \u001b]0;cgc report\u0007 to /ws/out.md\n${pad}`
-    const rendered = renderCommandText(reportOut, { label: 'report' })
-
-    expect(rendered).not.toContain('\u001b')
-    expect(rendered).not.toContain('\u0007')
-    expect(rendered).toContain('/ws/out.md')
-    expect(rendered).toContain('cgc report output truncated')
-    expect(rendered.length).toBeLessThanOrEqual(OUTPUT_TEXT_BUDGET)
-  })
-
-  it('is the pipeline renderStatusText consumes (status label, same budget)', () => {
-    const huge = 'x'.repeat(OUTPUT_TEXT_BUDGET * 2)
-    const view: CgcStatusView = {
-      cwd: '/ws',
-      snapshot: makeSnapshot({ reason: huge }),
-      workInFlight: false,
-      freshness: null,
-    }
-
-    const text = renderStatusText(view)
-
-    expect(text.length).toBeLessThanOrEqual(OUTPUT_TEXT_BUDGET)
-    expect(text).toContain('cgc status output truncated')
   })
 })
 
@@ -1441,7 +1403,7 @@ describe('/cgc sync (task 2.3)', () => {
 // ---------------------------------------------------------------------------
 
 describe('/cgc doctor (task 2.4)', () => {
-  it('runs the diagnostic command through the shared runner in the background and renders the settled output, bounded and cleaned', async () => {
+  it('consumes the runner policy output verbatim in the background (no second bounding)', async () => {
     const { runner, runs } = makeFakeRunner()
     const { ctx, notified } = makeContext()
     const deps: CgcCommandDependencies = { runner }
@@ -1459,24 +1421,18 @@ describe('/cgc doctor (task 2.4)', () => {
     expect(notified[0]?.message).toContain('diagnostics started in the background')
     expect(notified[0]?.type).toBe('info')
 
-    // Settling renders the captured output through the shared hygiene
-    // pipeline (design D4): ANSI stripped, size-bounded with the explicit
-    // marker naming the verb.
+    // The runner applies the shared policy before delivery (task 2.1), so the
+    // settled renderer consumes that policy output verbatim and adds no
+    // private bounding of its own.
     const pad = 'x'.repeat(OUTPUT_TEXT_BUDGET)
-    runs[0]?.settle(
-      makeResult({
-        stdout: `\u001b[1m\u001b[34mcgc doctor\u001b[0m — \u001b[32mhealthy\u001b[0m\nscan complete\n${pad}`,
-      }),
-    )
+    runs[0]?.settle(makeResult({ stdout: `cgc doctor — healthy\nscan complete\n${pad}` }))
     await Promise.resolve()
 
     expect(notified).toHaveLength(2)
     const rendered = notified[1]?.message ?? ''
-    expect(rendered).not.toContain('\u001b')
     expect(rendered).toContain('healthy')
     expect(rendered).toContain('scan complete')
-    expect(rendered).toContain('cgc doctor output truncated')
-    expect(rendered.length).toBeLessThanOrEqual(OUTPUT_TEXT_BUDGET)
+    expect(rendered).toContain(pad)
     expect(notified[1]?.type).toBe('info')
   })
 

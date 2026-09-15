@@ -1,1 +1,6 @@
 extensions/runner.test.ts:generic-api-key:306
+extensions/output-policy-matrix.test.ts:generic-api-key:143
+extensions/output-policy-matrix.test.ts:generic-api-key:168
+extensions/output-policy-matrix.test.ts:generic-api-key:226
+extensions/runner.test.ts:generic-api-key:323
+extensions/runner.test.ts:generic-api-key:328

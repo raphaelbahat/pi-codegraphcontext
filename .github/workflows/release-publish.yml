@@ -1,14 +1,28 @@
 name: Release Publish
 
+# Publishes to npm when a GitHub Release is published. The Release Please
+# workflow (push to main) creates the release and tag; this workflow must NOT
+# re-run the release-please action to decide whether to publish — its
+# release_created output is false on every invocation after the release
+# exists, which silently skipped every npm publish (v0.3.0 shipped to GitHub
+# Releases but never reached npm). Tying the trigger to the `release` event
+# publishes exactly when a release is actually created.
+#
+# workflow_dispatch exists to (re)publish an existing tag — e.g. to close the
+# gap for releases made before this fix (v0.3.0).
+
 on:
-  workflow_run:
-    workflows: ['Release Please']
-    types: [completed]
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.3.0)'
+        required: true
 
 permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+  contents: read
+  id-token: write # npm OIDC trusted publishing (no NPM_TOKEN secret required)
 
 concurrency:
   group: release
@@ -16,23 +30,16 @@ concurrency:
 
 jobs:
   publish:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - id: release
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-      # Pushes made with GITHUB_TOKEN do not trigger workflows, so publishing
-      # to npm happens here via workflow_run. id-token: write enables npm
-      # OIDC trusted publishing (no NPM_TOKEN secret required).
-      - if: steps.release.outputs.release_created == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - if: steps.release.outputs.release_created == 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-      - if: steps.release.outputs.release_created == 'true'
-        run: npm publish --access public
+          registry-url: 'https://registry.npmjs.org'
+      # npm >= 11.5 resolves publishing auth via OIDC when id-token: write is
+      # granted and the package's Trusted Publisher on npmjs.com points at
+      # this repository + workflow.
+      - run: npm publish --access public --provenance

@@ -31,6 +31,8 @@ describe('loadConfig', () => {
     expect(result.config.cgc.executable).toBe('cgc')
     expect(result.config.cgc.timeoutMs).toBe(30_000)
     expect(result.config.cgc.versionProbeTimeoutMs).toBe(10_000)
+    expect(result.config.cgc.api.enabled).toBe(true)
+    expect(result.config.cgc.api.port).toBe(8_000)
     expect(result.config.lifecycle.autoCreate).toBe(false)
     expect(result.config.lifecycle.syncOnStart).toBe(true)
     expect(result.config.worktree.mode).toBe('off')
@@ -177,6 +179,90 @@ describe('loadConfig', () => {
       })
       expect(result.config.cgc.timeoutMs).toBe(30_000)
       expect(result.warnings.join('\n')).toContain('cgc.timeoutMs')
+    }
+  })
+
+  it('supports the cgc.api env overrides (enabled and port)', () => {
+    const result = loadConfig({
+      env: cleanEnv(
+        envWith({
+          'cgc.api.enabled': 'false',
+          'cgc.api.port': '9000',
+        }),
+      ),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+
+    expect(result.config.cgc.api.enabled).toBe(false)
+    expect(result.config.cgc.api.port).toBe(9_000)
+    expect(result.sources['cgc.api.enabled']).toBe('env')
+    expect(result.sources['cgc.api.port']).toBe('env')
+    expect(result.warnings).toEqual([])
+  })
+
+  it('falls back to defaults on invalid cgc.api values', () => {
+    const badPort = loadConfig({
+      env: cleanEnv(envWith({ 'cgc.api.port': '70000' })),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(badPort.config.cgc.api.port).toBe(8_000)
+    expect(badPort.sources['cgc.api.port']).toBe('default')
+    expect(badPort.warnings.join('\n')).toContain('cgc.api.port')
+
+    const badEnabled = loadConfig({
+      env: cleanEnv(envWith({ 'cgc.api.enabled': 'maybe' })),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(badEnabled.config.cgc.api.enabled).toBe(true)
+    expect(badEnabled.sources['cgc.api.enabled']).toBe('default')
+    expect(badEnabled.warnings.join('\n')).toContain('cgc.api.enabled')
+
+    for (const bad of ['0', '-1', 'abc', '65536']) {
+      const result = loadConfig({
+        env: cleanEnv(envWith({ 'cgc.api.port': bad })),
+        cwd: '/nonexistent',
+        homeDir: '/nonexistent',
+      })
+      expect(result.config.cgc.api.port).toBe(8_000)
+      expect(result.warnings.join('\n')).toContain('cgc.api.port')
+    }
+  })
+
+  it('reads cgc.api from config files with env override precedence', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cgc-cfg-api-home-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'cgc-cfg-api-proj-'))
+    try {
+      mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+      writeFileSync(
+        join(home, '.pi', 'agent', 'cgc.json'),
+        JSON.stringify({ cgc: { api: { enabled: false, port: 9100 } } }),
+      )
+      mkdirSync(join(cwd, '.pi'), { recursive: true })
+      writeFileSync(
+        join(cwd, '.pi', 'cgc.json'),
+        JSON.stringify({ cgc: { api: { enabled: true } } }),
+      )
+
+      const fromFile = loadConfig({ env: cleanEnv(), cwd, homeDir: home })
+      expect(fromFile.config.cgc.api.enabled).toBe(true)
+      expect(fromFile.config.cgc.api.port).toBe(9_100)
+      expect(fromFile.sources['cgc.api.enabled']).toBe('config-file')
+      expect(fromFile.sources['cgc.api.port']).toBe('config-file')
+      expect(fromFile.warnings).toEqual([])
+
+      const fromEnv = loadConfig({
+        env: cleanEnv(envWith({ 'cgc.api.port': '9200' })),
+        cwd,
+        homeDir: home,
+      })
+      expect(fromEnv.config.cgc.api.port).toBe(9_200)
+      expect(fromEnv.sources['cgc.api.port']).toBe('env')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
     }
   })
 

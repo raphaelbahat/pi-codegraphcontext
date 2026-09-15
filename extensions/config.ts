@@ -13,6 +13,17 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+export interface ApiConfig {
+  /**
+   * Use the CGC HTTP API for the marker-absent indexedness probe chain
+   * (health → Cypher point lookup → repositories fallback → on-demand
+   * loopback spawn), falling back to `cgc list` (default true).
+   */
+  enabled: boolean
+  /** Port the CGC API server is expected on / spawned on (default 8000). */
+  port: number
+}
+
 export interface CgcConfig {
   /** `cgc` binary to spawn (resolved against PATH when not an absolute path). */
   executable: string
@@ -20,6 +31,8 @@ export interface CgcConfig {
   timeoutMs: number
   /** Tighter time budget for the cached version probe, in milliseconds. */
   versionProbeTimeoutMs: number
+  /** CGC HTTP API settings for the registry-backed indexedness probe chain. */
+  api: ApiConfig
 }
 
 export interface LifecycleConfig {
@@ -158,6 +171,8 @@ export type ConfigKey =
   | 'cgc.executable'
   | 'cgc.timeoutMs'
   | 'cgc.versionProbeTimeoutMs'
+  | 'cgc.api.enabled'
+  | 'cgc.api.port'
   | 'lifecycle.autoCreate'
   | 'lifecycle.syncOnStart'
   | 'worktree.mode'
@@ -173,7 +188,6 @@ export type ConfigKey =
   | 'output.gcf'
   | 'tools.cliGap.enabled'
   | 'guidance.routingSkill'
-
 export interface ConfigResult {
   config: ExtensionConfig
   /** Non-fatal notes about skipped/invalid layers or values. */
@@ -196,6 +210,10 @@ export const DEFAULT_CONFIG: ExtensionConfig = {
     executable: 'cgc',
     timeoutMs: 30_000,
     versionProbeTimeoutMs: 10_000,
+    api: {
+      enabled: true,
+      port: 8_000,
+    },
   },
   lifecycle: {
     autoCreate: false,
@@ -235,6 +253,8 @@ export const CONFIG_ENV_VARS: Record<ConfigKey, string> = {
   'cgc.executable': 'CGC_EXECUTABLE',
   'cgc.timeoutMs': 'CGC_TIMEOUT_MS',
   'cgc.versionProbeTimeoutMs': 'CGC_VERSION_PROBE_TIMEOUT_MS',
+  'cgc.api.enabled': 'CGC_API_ENABLED',
+  'cgc.api.port': 'CGC_API_PORT',
   'lifecycle.autoCreate': 'CGC_LIFECYCLE_AUTO_CREATE',
   'lifecycle.syncOnStart': 'CGC_LIFECYCLE_SYNC_ON_START',
   'worktree.mode': 'CGC_WORKTREE_MODE',
@@ -279,6 +299,24 @@ function parseTimeoutMs(raw: unknown, key: ConfigKey, warnings: string[]): numbe
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     warnings.push(
       `${key}: ignoring invalid timeout ${JSON.stringify(raw)} (expected a positive number of milliseconds)`,
+    )
+    return undefined
+  }
+  return value
+}
+
+/** Parse a TCP port (whole number 1–65535) shared by env and file layers. */
+function parsePort(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
+  const value = typeof raw === 'string' ? Number(raw) : raw
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > 65_535
+  ) {
+    warnings.push(
+      `${key}: ignoring invalid ${JSON.stringify(raw)} (expected a TCP port between 1 and 65535)`,
     )
     return undefined
   }
@@ -364,6 +402,17 @@ function readConfigFile(
       if (cgc.timeoutMs !== undefined) values['cgc.timeoutMs'] = cgc.timeoutMs
       if (cgc.versionProbeTimeoutMs !== undefined) {
         values['cgc.versionProbeTimeoutMs'] = cgc.versionProbeTimeoutMs
+      }
+      const api = cgc.api
+      if (api !== undefined) {
+        if (isPlainObject(api)) {
+          if (api.enabled !== undefined) values['cgc.api.enabled'] = api.enabled
+          if (api.port !== undefined) values['cgc.api.port'] = api.port
+        } else {
+          warnings.push(
+            `${label}: ignoring "api" section under "cgc" in ${path} (expected an object)`,
+          )
+        }
       }
     } else {
       warnings.push(`${label}: ignoring "cgc" section in ${path} (expected an object)`)
@@ -497,6 +546,25 @@ function applyFileLayer(
         const timeoutMs = parseTimeoutMs(raw, key, warnings)
         if (timeoutMs !== undefined) {
           config.cgc.versionProbeTimeoutMs = timeoutMs
+          sources[key] = 'config-file'
+        }
+        break
+      }
+      case 'cgc.api.enabled': {
+        const parsed =
+          typeof raw === 'boolean' ? raw : typeof raw === 'string' ? parseBoolean(raw) : undefined
+        if (parsed !== undefined) {
+          config.cgc.api.enabled = parsed
+          sources[key] = 'config-file'
+        } else {
+          warnings.push(`${label}: ignoring invalid cgc.api.enabled value ${JSON.stringify(raw)}`)
+        }
+        break
+      }
+      case 'cgc.api.port': {
+        const port = parsePort(raw, key, warnings)
+        if (port !== undefined) {
+          config.cgc.api.port = port
           sources[key] = 'config-file'
         }
         break
@@ -652,6 +720,26 @@ function applyEnvLayer(
         if (timeoutMs !== undefined) {
           if (key === 'cgc.timeoutMs') config.cgc.timeoutMs = timeoutMs
           else config.cgc.versionProbeTimeoutMs = timeoutMs
+          sources[key] = 'env'
+        }
+        break
+      }
+      case 'cgc.api.enabled': {
+        const parsed = parseBoolean(raw)
+        if (parsed !== undefined) {
+          config.cgc.api.enabled = parsed
+          sources[key] = 'env'
+        } else {
+          warnings.push(
+            `${key}: ignoring invalid ${name} value ${JSON.stringify(raw)} (expected 1/true/yes/on or 0/false/no/off)`,
+          )
+        }
+        break
+      }
+      case 'cgc.api.port': {
+        const port = parsePort(raw, key, warnings)
+        if (port !== undefined) {
+          config.cgc.api.port = port
           sources[key] = 'env'
         }
         break

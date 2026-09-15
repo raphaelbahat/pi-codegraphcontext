@@ -2,6 +2,7 @@
 // Registered against the Pi extension API; the CGC lifecycle gate, config
 // loading, and CLI-gap tools land via the OpenSpec changes (openspec/changes/add-cgc-*).
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { ApiRegistryClient } from './api-registry'
 import {
   type CleanupEvent,
   type CleanupExtensionApi,
@@ -45,6 +46,7 @@ import { WorkspaceDetector } from './workspace'
 let cachedConfig: ConfigResult | undefined
 let cachedRunner: CgcRunner | undefined
 let cachedCleanup: ProcessCleanupHandle | undefined
+let cachedApiRegistry: ApiRegistryClient | undefined
 let cachedDetector: WorkspaceDetector | undefined
 let cachedStateStore: LifecycleStateStore | undefined
 let cachedGate: LifecycleGate | undefined
@@ -139,6 +141,19 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       runner: cachedRunner,
       versionProbeTimeoutMs: config.cgc.versionProbeTimeoutMs,
     })
+    // add-cgc-api-registry-probe (task 4.2): the CGC HTTP API registry
+    // client for the marker-absent indexedness probe chain, built only
+    // when `cgc.api.enabled` and the runner exist. Loopback-only spawning,
+    // bounded budgets, spawned children registered with the runner's
+    // existing teardown sweeps. Construction failure leaves it undefined —
+    // the classifier's `cgc list` fallback then decides alone (fail-open).
+    cachedApiRegistry ??= config.cgc.api.enabled
+      ? new ApiRegistryClient({
+          executable: config.cgc.executable,
+          port: config.cgc.api.port,
+          runner: cachedRunner,
+        })
+      : undefined
   } catch {
     // Fail-open: registration must never throw. Teardown degrades to the
     // runner's per-command timeout and abort-signal paths.
@@ -156,6 +171,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
         runner: cachedRunner,
         config: getConfig().config,
         api: pi as unknown as GateExtensionApi,
+        apiRegistry: cachedApiRegistry,
       })
       cachedGate.register()
     }

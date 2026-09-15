@@ -207,6 +207,8 @@ warning and fall back to the lower layer.
 | `cgc.executable` | `cgc` | `CGC_EXECUTABLE` | Binary to spawn (PATH-resolved unless absolute). |
 | `cgc.timeoutMs` | `30000` | `CGC_TIMEOUT_MS` | Time budget for cgc invocations. |
 | `cgc.versionProbeTimeoutMs` | `10000` | `CGC_VERSION_PROBE_TIMEOUT_MS` | Time budget for the cached version probe. |
+| `cgc.api.enabled` | `true` | `CGC_API_ENABLED` | Use the CGC HTTP API for the marker-absent indexedness probe (falls back to `cgc list`); `false` restores the CLI-only behavior. |
+| `cgc.api.port` | `8000` | `CGC_API_PORT` | Port the CGC API server is expected on / spawned on (loopback only). |
 | `lifecycle.autoCreate` | `false` | `CGC_LIFECYCLE_AUTO_CREATE` | Opt-in: create a missing index automatically (also gates `/cgc index` on an unindexed workspace). |
 | `lifecycle.syncOnStart` | `true` | `CGC_LIFECYCLE_SYNC_ON_START` | Reconcile graph/disk drift at session start when an index exists. |
 | `worktree.mode` | `off` | `CGC_WORKTREE_MODE` | `off` or `isolate`; isolate gives each worktree its own named context. |

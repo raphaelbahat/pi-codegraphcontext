@@ -44,7 +44,10 @@ malformed `.git` pointer simply means "not a worktree") instead of producing wro
   `CGC_EXECUTABLE`. See the
   [CGC indexing guide](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/docs/guides/indexing.md)
   for installing and preparing the CLI.
-
+- Optional: the **CGC HTTP API** (`cgc api start`, or the extension spawns one on demand
+  on `127.0.0.1`, loopback only) speeds up the session-start indexedness check for
+  non-bundled backends (Neo4j / FalkorDB); see `cgc.api` below. Without it the
+  `cgc list` CLI probe decides instead — behavior is identical, only slower.
 ## Installation
 
 1. Install the `cgc` CLI and confirm it works:
@@ -139,7 +142,11 @@ and fall back to the lower layer.
     "cgc": {
         "executable": "cgc",
         "timeoutMs": 30000,
-        "versionProbeTimeoutMs": 10000
+        "versionProbeTimeoutMs": 10000,
+        "api": {
+            "enabled": true,
+            "port": 8000
+        }
     },
     "lifecycle": {
         "autoCreate": false,
@@ -179,6 +186,7 @@ and fall back to the lower layer.
 | ----------- | ---------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------- |
 | `cgc`       | `executable`                                         | `"cgc"`                             | The CGC binary (name or absolute path)                                                 |
 | `cgc`       | `timeoutMs` / `versionProbeTimeoutMs`                | `30000` / `10000`                   | Per-command and version-probe time budgets                                             |
+| `cgc`       | `api.enabled` / `api.port`                           | `true` / `8000`                     | CGC HTTP API probe chain for marker-less indexedness (falls back to `cgc list`)        |
 | `lifecycle` | `autoCreate`                                         | `false`                             | Index a workspace automatically when none exists (consent gate)                        |
 | `lifecycle` | `syncOnStart`                                        | `true`                              | Sync drift detected at session start                                                   |
 | `worktree`  | `mode`                                               | `"off"`                             | `"isolate"` maps each git worktree to its own CGC context                              |
@@ -196,6 +204,7 @@ Booleans accept `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`.
 | Variable                                                                                                     | Overrides                                        |
 | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
 | `CGC_EXECUTABLE`                                                                                             | `cgc.executable`                                 |
+| `CGC_API_ENABLED` / `CGC_API_PORT`                                                                           | `cgc.api.*`                                      |
 | `CGC_LIFECYCLE_AUTO_CREATE` / `CGC_LIFECYCLE_SYNC_ON_START`                                                  | `lifecycle.*`                                    |
 | `CGC_WORKTREE_MODE`                                                                                          | `worktree.mode`                                  |
 | `CGC_FRESHNESS_WATCH` / `CGC_FRESHNESS_AUTO_SYNC` / `CGC_FRESHNESS_MAX_SYNCS_PER_SESSION`                    | `freshness.*`                                    |
@@ -229,9 +238,8 @@ export CGC_ALLOWED_ROOTS="$PWD"
 
 ```sh
 bun install
-bun test          # 844 tests across 30 files
+bun test          # 869 tests across 31 files
 bunx tsc --noEmit # type check
 ```
-
 The extension is fully covered by the per-capability specs under
 `openspec/specs/` and the archived change history under `openspec/changes/archive/`.

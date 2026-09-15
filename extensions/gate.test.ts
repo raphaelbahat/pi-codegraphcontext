@@ -87,7 +87,12 @@ function makeConfig(
   overrides: Partial<{ autoCreate: boolean; syncOnStart: boolean }> = {},
 ): ExtensionConfig {
   return {
-    cgc: { executable: 'cgc', timeoutMs: 30_000, versionProbeTimeoutMs: 10_000 },
+    cgc: {
+      executable: 'cgc',
+      timeoutMs: 30_000,
+      versionProbeTimeoutMs: 10_000,
+      api: { enabled: true, port: 8_000 },
+    },
     lifecycle: {
       autoCreate: overrides.autoCreate ?? false,
       syncOnStart: overrides.syncOnStart ?? true,
@@ -651,7 +656,12 @@ describe('LifecycleGate task 3.3 audit fills (probe budgets, dispose, teardown)'
     const gate = new LifecycleGate({
       runner: runner as unknown as CgcRunner,
       config: {
-        cgc: { executable: 'cgc', timeoutMs: 1_234, versionProbeTimeoutMs: 5_678 },
+        cgc: {
+          executable: 'cgc',
+          timeoutMs: 1_234,
+          versionProbeTimeoutMs: 5_678,
+          api: { enabled: true, port: 8_000 },
+        },
         lifecycle: { autoCreate: false, syncOnStart: true },
         worktree: { mode: 'off' },
         proactive: { sessionNote: true, driftSteers: false, resultAnnotations: false },
@@ -844,7 +854,12 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
     overrides: Partial<{ autoCreate: boolean; syncOnStart: boolean }> = {},
   ): ExtensionConfig {
     return {
-      cgc: { executable: 'cgc', timeoutMs: 30_000, versionProbeTimeoutMs: 10_000 },
+      cgc: {
+        executable: 'cgc',
+        timeoutMs: 30_000,
+        versionProbeTimeoutMs: 10_000,
+        api: { enabled: true, port: 8_000 },
+      },
       lifecycle: {
         autoCreate: overrides.autoCreate ?? false,
         syncOnStart: overrides.syncOnStart ?? true,
@@ -939,7 +954,12 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
     const gate = new LifecycleGate({
       runner,
       config: {
-        cgc: { executable: 'cgc', timeoutMs: 30_000, versionProbeTimeoutMs: 10_000 },
+        cgc: {
+          executable: 'cgc',
+          timeoutMs: 30_000,
+          versionProbeTimeoutMs: 10_000,
+          api: { enabled: true, port: 8_000 },
+        },
         lifecycle: { autoCreate: true, syncOnStart: true },
         worktree: { mode: 'off' },
         proactive: { sessionNote: true, driftSteers: false, resultAnnotations: false },
@@ -1156,7 +1176,12 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
     const gate = new LifecycleGate({
       runner,
       config: {
-        cgc: { executable: 'cgc', timeoutMs: 30_000, versionProbeTimeoutMs: 10_000 },
+        cgc: {
+          executable: 'cgc',
+          timeoutMs: 30_000,
+          versionProbeTimeoutMs: 10_000,
+          api: { enabled: true, port: 8_000 },
+        },
         lifecycle: { autoCreate: true, syncOnStart: true },
         worktree: { mode: 'off' },
         proactive: { sessionNote: true, driftSteers: false, resultAnnotations: false },

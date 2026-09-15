@@ -1,6 +1,6 @@
 {
   "name": "pi-codegraphcontext",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi coding-agent extension for CodeGraphContext (CGC): index lifecycle gate, freshness sync, agent routing guidance, status surfaces, and CLI-gap tools wrapping the cgc binary.",
   "type": "module",
   "keywords": [

@@ -59,13 +59,19 @@ Rule: The guidelines MUST direct relationship-shaped questions (callers, callees
 - **WHEN** the agent chooses a tool
 - **THEN** the guidance it received does not steer that work away from built-in search or file reading
 
-### Requirement: Opt-in routing skill
+### Requirement: Opt-out routing skill
 
-Rule: The extension SHALL provide a routing skill containing deeper CGC onboarding content, and the skill SHALL be disabled by default.
+Rule: The extension SHALL provide a routing skill containing deeper CGC onboarding content, and the skill SHALL be enabled by default (opt-out via `guidance.routingSkill: false` or `CGC_GUIDANCE_ROUTING_SKILL=0`).
 
-#### Scenario: Skill disabled by default
+#### Scenario: Skill enabled by default
 
-- **GIVEN** a default installation with no routing-skill opt-in
+- **GIVEN** a default installation with no routing-skill opt-out
+- **WHEN** a session starts
+- **THEN** the routing skill is offered to the agent
+
+#### Scenario: Skill opted out
+
+- **GIVEN** the user has opted out of the routing skill
 - **WHEN** a session starts
 - **THEN** the routing skill is not offered to the agent
 
@@ -77,7 +83,7 @@ Rule: The extension SHALL provide a routing skill containing deeper CGC onboardi
 
 #### Scenario: Skill discoverability is evaluated at discovery time
 
-- **GIVEN** the user has opted in to the routing skill and guidance was not ready when the session's skill discovery ran
+- **GIVEN** the routing skill is enabled (the default) and guidance was not ready when the session's skill discovery ran
 - **WHEN** guidance readiness first becomes true later in the same session
 - **THEN** the routing skill's discoverability is not changed retroactively mid-session; it is offered at a discovery evaluation only when the opt-in flag is set and guidance is ready
 

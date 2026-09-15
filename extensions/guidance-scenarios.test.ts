@@ -140,10 +140,10 @@ describe('spec scenarios: always-on routing guidelines', () => {
   })
 
   it('Scenario "Guidelines have no opt-out of their own": no setting disables the guidelines alone', () => {
-    // The guidance config section carries exactly the opt-in routing skill.
+    // The guidance config section carries exactly the routing-skill flag.
     expect(Object.keys(DEFAULT_CONFIG.guidance)).toEqual(['routingSkill'])
     // Across the whole extension config surface, the ONLY `guidance.*` key is
-    // that routing-skill opt-in.
+    // that routing-skill flag.
     const guidanceKeys = Object.keys(CONFIG_ENV_VARS).filter((key) => key.startsWith('guidance.'))
     expect(guidanceKeys).toEqual(['guidance.routingSkill'])
     // No key in ANY section even names the guideline/card layer.
@@ -153,7 +153,7 @@ describe('spec scenarios: always-on routing guidelines', () => {
       ),
     ).toEqual([])
 
-    // Honoring the routing-skill opt-in does not touch the always-on card: it
+    // Honoring the routing-skill flag does not touch the always-on card: it
     // is delivered identically with the flag off and on.
     for (const routingSkill of [false, true]) {
       const loaded = loadConfig({
@@ -257,14 +257,19 @@ describe('spec scenarios: advisory routing content', () => {
   })
 })
 
-describe('spec scenarios: opt-in routing skill', () => {
-  it('Scenario "Skill disabled by default": the routing skill is not offered', () => {
-    // The config default is off.
-    expect(DEFAULT_CONFIG.guidance.routingSkill).toBe(false)
-    // The package manifest force-excludes the opt-in skill, so a default
-    // install never loads it; only the runtime discovery handler can expose it.
+describe('spec scenarios: routing skill exposure (default on, opt-out)', () => {
+  it('Scenario "Skill enabled by default": a default install offers the skill', () => {
+    // The config default is on.
+    expect(DEFAULT_CONFIG.guidance.routingSkill).toBe(true)
+    // The package manifest still force-excludes the skill from static loading,
+    // so only the runtime discovery handler can expose it.
     expect(PACKAGE_JSON.pi?.skills).toContain('!skills/cgc-routing/**')
 
+    const { discover } = makeSkillHarness({ enabled: true, ready: true })
+    expect(discover()).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
+  })
+
+  it('Scenario "Skill opted out": an explicit false hides it', () => {
     const { discover } = makeSkillHarness({ enabled: false, ready: true })
     expect(discover()).toBeUndefined()
   })

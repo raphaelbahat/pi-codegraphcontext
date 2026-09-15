@@ -31,7 +31,7 @@ Code-graph answers are only as good as the index behind them. Without a gate, ag
 | **Worktree contexts**    | Optional `isolate` mode maps git worktrees to dedicated CGC contexts (`--context wt-<id>`), with durable identity-verified mappings and fail-closed mismatch handling                                                                |
 | **Output economy**       | CGC tool output is size-capped, secrets are redacted, and oversized results spill to disk with archive IDs instead of flooding the context window                                                                                    |
 | **CLI-gap tools**        | `cgc_bundle_export`, `cgc_context`, and `cgc_doctor` wrap the CGC verbs the MCP catalog does not expose                                                                                                                              |
-| **Agent guidance**       | An always-on routing guideline card (graph-vs-text tool choice) plus an opt-in `cgc-routing` skill                                                                                                                                   |
+| **Agent guidance**       | An always-on routing guideline card (graph-vs-text tool choice) plus an on-by-default (opt-out) `cgc-routing` skill                                                                                                                                   |
 
 Everything is **fail-open**: a guard error is recorded, retried at most once per session,
 and never blocks the agent loop. Detection errors degrade honestly (for example, a
@@ -79,7 +79,7 @@ malformed `.git` pointer simply means "not a worktree") instead of producing wro
 
 > [!TIP]
 > No configuration is required for the default experience. Every behavior below has a
-> working default; the configuration section is purely opt-in.
+> working default; the configuration section exists to change defaults, not to enable features.
 
 ## Usage
 
@@ -117,7 +117,7 @@ The status HUD reflects all of this live; no command is needed to see the state.
   [MCP tools documentation](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/MCP_TOOLS.md).
 - **The always-on guideline card** steering tool choice: graph for relationships,
   built-in search for exact strings.
-- **The opt-in `cgc-routing` skill** (`guidance.routingSkill: true`) with intent-first
+- **The `cgc-routing` skill** (on by default; opt out with `guidance.routingSkill: false`) with intent-first
   tool-choice detail.
 - **The CLI-gap tools** filling the MCP catalog gaps.
 - **The [agent guide](docs/agent-guide.md)** — the deep, intent-first reference the card
@@ -177,7 +177,7 @@ and fall back to the lower layer.
         }
     },
     "guidance": {
-        "routingSkill": false
+        "routingSkill": true
     }
 }
 ```
@@ -194,7 +194,7 @@ and fall back to the lower layer.
 | `freshness` | `watch` / `autoSync` / `maxSyncsPerSession`          | `false` / `true` / `2`              | File watching, background syncing, and its per-session bound                           |
 | `output`    | `maxBytes` / `spillToTemp` / `redactSecrets` / `gcf` | `16384` / `true` / `true` / `false` | Output budget, spill-to-disk, secret redaction, graph-context-format output            |
 | `tools`     | `cliGap.enabled`                                     | `true`                              | Registers the three CLI-gap tools (`cgc_bundle_export`, `cgc_context`, `cgc_doctor`)   |
-| `guidance`  | `routingSkill`                                       | `false`                             | Offers the opt-in `cgc-routing` skill to the agent                                     |
+| `guidance`  | `routingSkill`                                       | `true`                             | Offers the `cgc-routing` skill to the agent (opt out with `false`)                                     |
 
 ### Environment Variables
 

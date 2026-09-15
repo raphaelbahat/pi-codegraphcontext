@@ -523,7 +523,7 @@ describe('guidance gating matrix (task 3.1)', () => {
     expect(injector.hasInjected()).toBe(true)
   })
 
-  it('gates the opt-in routing skill on the same matrix at discovery time', () => {
+  it('gates the routing skill (default on, opt-out) on the same matrix at discovery time', () => {
     for (const state of GATING_MATRIX_STATES) {
       const handlers: Array<(event: unknown, ctx: unknown) => unknown> = []
       const exposure = new GuidanceSkillExposure({
@@ -607,7 +607,7 @@ describe('guidance no-opt-out property (task 3.2)', () => {
       homeDir: '/nonexistent',
     })
     expect(Object.keys(result.config.guidance)).toEqual(['routingSkill'])
-    expect(result.config.guidance.routingSkill).toBe(false)
+    expect(result.config.guidance.routingSkill).toBe(true)
     expect(result.sources['guidance.routingSkill']).toBe('default')
   })
 

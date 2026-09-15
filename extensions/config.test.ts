@@ -47,7 +47,7 @@ describe('loadConfig', () => {
     expect(result.config.output.redactSecrets).toBe(true)
     expect(result.config.output.gcf).toBe(false)
     expect(result.config.tools.cliGap.enabled).toBe(true)
-    expect(result.config.guidance.routingSkill).toBe(false)
+    expect(result.config.guidance.routingSkill).toBe(true)
     expect(result.warnings).toEqual([])
     for (const key of ENV_KEYS) {
       expect(result.sources[key]).toBe('default')
@@ -911,27 +911,27 @@ describe('loadConfig', () => {
     }
   })
 
-  it('defaults guidance.routingSkill to false (always-on card stays non-configurable) with env override and invalid fallback', () => {
+  it('defaults guidance.routingSkill to true (opt-out; the always-on card stays non-configurable) with env override and invalid fallback', () => {
     const defaults = loadConfig({ env: cleanEnv(), cwd: '/nonexistent', homeDir: '/nonexistent' })
-    expect(defaults.config.guidance.routingSkill).toBe(false)
+    expect(defaults.config.guidance.routingSkill).toBe(true)
     expect(defaults.sources['guidance.routingSkill']).toBe('default')
     expect(defaults.warnings).toEqual([])
 
-    const on = loadConfig({
-      env: cleanEnv(envWith({ 'guidance.routingSkill': 'true' })),
+    const off = loadConfig({
+      env: cleanEnv(envWith({ 'guidance.routingSkill': 'false' })),
       cwd: '/nonexistent',
       homeDir: '/nonexistent',
     })
-    expect(on.config.guidance.routingSkill).toBe(true)
-    expect(on.sources['guidance.routingSkill']).toBe('env')
-    expect(on.warnings).toEqual([])
+    expect(off.config.guidance.routingSkill).toBe(false)
+    expect(off.sources['guidance.routingSkill']).toBe('env')
+    expect(off.warnings).toEqual([])
 
     const invalid = loadConfig({
       env: cleanEnv(envWith({ 'guidance.routingSkill': 'maybe' })),
       cwd: '/nonexistent',
       homeDir: '/nonexistent',
     })
-    expect(invalid.config.guidance.routingSkill).toBe(false)
+    expect(invalid.config.guidance.routingSkill).toBe(true)
     expect(invalid.sources['guidance.routingSkill']).toBe('default')
     expect(invalid.warnings.join('\n')).toContain('guidance.routingSkill')
   })

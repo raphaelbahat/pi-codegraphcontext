@@ -153,6 +153,6 @@ remove it.
 
 This skill is the compact routing layer. For the full intent-first reference —
 the complete routing table, the configuration/consent overview, backend
-caveats, and troubleshooting — continue to the [CGC agent guide](https://github.com/raphaelbahat/pi-codegraphcontext/blob/main/docs/agent-guide.md)
-(`docs/agent-guide.md` in this repository). Link out to it rather than copying
+caveats, and troubleshooting — continue to the [CGC agent guide](https://raw.githubusercontent.com/raphaelbahat/pi-codegraphcontext/refs/heads/main/docs/agent-guide.md)
+(raw Markdown; `docs/agent-guide.md` in this repository). Link out to it rather than copying
 its content into the skill.

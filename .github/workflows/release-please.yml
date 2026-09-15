@@ -47,3 +47,13 @@ jobs:
           else
             echo "No Release PR to merge."
           fi
+
+      # The merge push was made with GITHUB_TOKEN, which does not trigger
+      # workflows — re-run the action here (it is idempotent) so the tag +
+      # GitHub Release are created immediately after the Release PR merges.
+      # The release event then fires release-publish.yml for npm.
+      - id: release2
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

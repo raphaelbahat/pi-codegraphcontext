@@ -34,12 +34,12 @@ jobs:
         run: |
           PR=""
           if [ -n "$PR_JSON" ] && [ "$PR_JSON" != "null" ]; then
-            PR=$(printf '%s' "$PR_JSON" | jq -r '.prNumber // empty')
+            PR=$(printf '%s' "$PR_JSON" | jq -r '.number // .prNumber // empty')
           fi
           if [ -z "$PR" ]; then
-            PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
-                   --head "release-please--branches--main" --state open \
-                   --json number --jq '.[0].number // empty')
+            PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+                   --json number,headRefName \
+                   --jq '.[] | select(.headRefName | startswith("release-please--branches--")) | .number' | head -1)
           fi
           if [ -n "$PR" ]; then
             echo "Merging Release PR #$PR"

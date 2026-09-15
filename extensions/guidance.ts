@@ -197,6 +197,11 @@ export interface GuidanceInjectorOptions {
   readiness?: GuidanceReadinessPredicate
   /** Pi API receiving the hooks. When omitted, `register()` is a no-op. */
   api?: GuidanceInjectionApi
+  /**
+   * When true, the delivered card carries the `/skill:cgc-routing` pointer
+   * (the user-executable routing skill). Wired from `guidance.routingSkill`.
+   */
+  routingSkillPointer?: boolean
   /** Optional error sink: every contained delivery error is reported here once. */
   onError?: (message: string) => void
 }
@@ -244,6 +249,9 @@ export class GuidanceInjector {
   private readonly readiness: GuidanceReadinessPredicate
   private readonly api: GuidanceInjectionApi | undefined
   private readonly onError: ((message: string) => void) | undefined
+  /** When true, the delivered card carries the `/skill:cgc-routing` pointer. */
+  /** When true, the delivered card carries the `/skill:cgc-routing` pointer. */
+  private readonly routingSkillPointer: boolean
 
   private registered = false
   private disposed = false
@@ -263,6 +271,7 @@ export class GuidanceInjector {
     this.readiness = options.readiness ?? isGuidanceReadyForSnapshot
     this.api = options.api
     this.onError = options.onError
+    this.routingSkillPointer = options.routingSkillPointer ?? false
   }
 
   /**
@@ -396,7 +405,14 @@ export class GuidanceInjector {
       if (typeof systemPrompt !== 'string') return undefined
 
       this.injected = true
-      return { systemPrompt: `${systemPrompt}\n\n${GUIDANCE_CARD}` }
+      // The routing-skill pointer rides the same per-turn injection so the
+      // agent-facing availability stays readiness-gated (the skill itself is
+      // user-executable via /skill regardless — discovery contributes it
+      // whenever the flag is enabled).
+      const delivery = this.routingSkillPointer
+        ? `${GUIDANCE_CARD}\n\nDeeper routing detail: /skill:cgc-routing.`
+        : GUIDANCE_CARD
+      return { systemPrompt: `${systemPrompt}\n\n${delivery}` }
     } catch (error) {
       // Fail-open: the injection handler must never throw into the turn. A
       // delivery FAILURE (not a deferral) is recorded and consumes the
@@ -492,26 +508,23 @@ export interface GuidanceSkillExposureOptions {
   enabled: boolean
   /**
    * Per-workspace readiness check (the shared {@link GuidanceReadiness} built
-   * from the snapshot predicate). Omitted -> permanently suppressed, matching
-   * the guidance-readiness degradation when the lifecycle gate is absent.
-   */
-  readiness?: GuidanceReadiness
   /** Pi API receiving the `resources_discover` handler. Omitted -> `register()` is a no-op. */
   api?: GuidanceSkillDiscoverApi
-  /** Skill path(s) contributed when enabled and ready. Defaults to the bundled skill. */
+  /** Skill path(s) contributed when enabled. Defaults to the bundled skill. */
   skillPaths?: readonly string[]
   /** Optional error sink: every contained discovery error is reported here once. */
   onError?: (message: string) => void
 }
 
 /**
- * Opt-in routing-skill exposure (task 2.4). Registers a `resources_discover`
- * handler that returns `{ skillPaths }` ONLY when the opt-in flag is set AND the
- * readiness predicate holds for the discovered workspace; otherwise it returns
- * undefined and contributes nothing. Discovery is evaluated per event
- * (`startup` / `reload`) — a readiness transition later in a session is NOT
- * applied retroactively (spec "Skill discoverability is evaluated at discovery
- * time").
+ * Routing-skill exposure (task 2.4). Registers a `resources_discover`
+ * handler that returns `{ skillPaths }` whenever the flag is enabled; readiness
+ * deliberately does NOT gate discovery (pi fires `resources_discover` before
+ * the gate's background classification records any snapshot — gating there
+ * made the skill invisible on every fresh session). Readiness gates the
+ * AGENT-side pointer instead: the injector appends the `/skill:cgc-routing`
+ * pointer on the first ready turn, evaluated per turn (spec "Skill
+ * discoverability is evaluated at discovery time").
  *
  * Fail-open: `register()` never throws, the handler body is fully guarded, and
  * every contained failure is recorded (never propagated into pi's event
@@ -519,7 +532,6 @@ export interface GuidanceSkillExposureOptions {
  */
 export class GuidanceSkillExposure {
   private readonly enabled: boolean
-  private readonly readiness: GuidanceReadiness
   private readonly api: GuidanceSkillDiscoverApi | undefined
   private readonly skillPaths: readonly string[]
   private readonly onError: ((message: string) => void) | undefined
@@ -531,9 +543,6 @@ export class GuidanceSkillExposure {
 
   constructor(options: GuidanceSkillExposureOptions) {
     this.enabled = options.enabled
-    // Omitted readiness degrades to permanently suppressed (same posture as
-    // createGuidanceReadiness when the snapshot source is absent).
-    this.readiness = options.readiness ?? (() => false)
     this.api = options.api
     this.skillPaths = options.skillPaths ?? [GUIDANCE_ROUTING_SKILL_PATH]
     this.onError = options.onError
@@ -574,9 +583,13 @@ export class GuidanceSkillExposure {
   }
 
   /**
-   * Discovery hook body. Contributes the skill path(s) only when opted in and
-   * ready for the discovered workspace; otherwise contributes nothing. Never
-   * throws.
+   * Discovery hook body. Contributes the skill path(s) whenever the
+   * routing-skill flag is enabled — readiness deliberately does NOT gate
+   * discovery: pi fires `resources_discover` before the gate's background
+   * classification records any snapshot, so a readiness check here made the
+   * skill invisible on every fresh session (the observed bug). Readiness
+   * gates the AGENT-side pointer instead (the `before_agent_start`
+   * injection, evaluated per turn). Never throws.
    */
   private readonly handleResourcesDiscover = (event: unknown): unknown => {
     if (this.disposed) return undefined
@@ -584,7 +597,6 @@ export class GuidanceSkillExposure {
       if (!this.enabled) return undefined
       const cwd = resourcesDiscoverCwd(event)
       if (cwd === undefined) return undefined
-      if (!this.readiness(cwd)) return undefined
       return { skillPaths: [...this.skillPaths] }
     } catch (error) {
       // Fail-open: skill discovery must never throw into pi's dispatch.

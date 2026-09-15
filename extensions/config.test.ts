@@ -2,7 +2,14 @@ import { describe, expect, it } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CONFIG_ENV_VARS, type ConfigKey, DEFAULT_CONFIG, loadConfig, parseBoolean } from './config'
+import {
+  CONFIG_ENV_VARS,
+  type ConfigKey,
+  DEFAULT_CONFIG,
+  loadConfig,
+  parseBoolean,
+  resolvePiAgentDir,
+} from './config'
 
 const ENV_KEYS = Object.keys(CONFIG_ENV_VARS) as ConfigKey[]
 
@@ -981,5 +988,75 @@ describe('parseBoolean', () => {
     expect(parseBoolean('')).toBeUndefined()
     expect(parseBoolean('maybe')).toBeUndefined()
     expect(parseBoolean('2')).toBeUndefined()
+  })
+})
+
+describe('PI_CODING_AGENT_DIR-aware global config resolution', () => {
+  it('resolvePiAgentDir honors the override, tilde-expands it, and defaults to ~/.pi/agent', () => {
+    expect(resolvePiAgentDir('/home/tester', {})).toBe('/home/tester/.pi/agent')
+    expect(resolvePiAgentDir('/home/tester', { PI_CODING_AGENT_DIR: '/custom/agent-dir' })).toBe(
+      '/custom/agent-dir',
+    )
+    expect(resolvePiAgentDir('/home/tester', { PI_CODING_AGENT_DIR: '~/my-agent' })).toBe(
+      '/home/tester/my-agent',
+    )
+    expect(resolvePiAgentDir('/home/tester', { PI_CODING_AGENT_DIR: '   ' })).toBe(
+      '/home/tester/.pi/agent',
+    )
+  })
+
+  it('reads the global config from $PI_CODING_AGENT_DIR/cgc.json when set', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'cgc-agent-dir-'))
+    try {
+      writeFileSync(
+        join(agentDir, 'cgc.json'),
+        JSON.stringify({ guidance: { routingSkill: false } }),
+      )
+      const result = loadConfig({
+        env: cleanEnv({ PI_CODING_AGENT_DIR: agentDir }),
+        cwd: '/nonexistent',
+        homeDir: '/nonexistent',
+      })
+      expect(result.config.guidance.routingSkill).toBe(false)
+      expect(result.sources['guidance.routingSkill']).toBe('config-file')
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true })
+    }
+  })
+
+  it('expands a leading ~ in PI_CODING_AGENT_DIR against homeDir', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cgc-home-'))
+    try {
+      mkdirSync(join(home, 'my-agent'), { recursive: true })
+      writeFileSync(
+        join(home, 'my-agent', 'cgc.json'),
+        JSON.stringify({ tools: { cliGap: { enabled: false } } }),
+      )
+      const result = loadConfig({
+        env: cleanEnv({ PI_CODING_AGENT_DIR: '~/my-agent' }),
+        cwd: '/nonexistent',
+        homeDir: home,
+      })
+      expect(result.config.tools.cliGap.enabled).toBe(false)
+      expect(result.sources['tools.cliGap.enabled']).toBe('config-file')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('defaults to ~/.pi/agent/cgc.json when the override is unset', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cgc-home-'))
+    try {
+      mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+      writeFileSync(
+        join(home, '.pi', 'agent', 'cgc.json'),
+        JSON.stringify({ lifecycle: { autoCreate: true } }),
+      )
+      const result = loadConfig({ env: cleanEnv(), cwd: '/nonexistent', homeDir: home })
+      expect(result.config.lifecycle.autoCreate).toBe(true)
+      expect(result.sources['lifecycle.autoCreate']).toBe('config-file')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })

@@ -25,7 +25,6 @@ import {
 } from './freshness'
 import { type GateExtensionApi, LifecycleGate } from './gate'
 import {
-  createGuidanceReadiness,
   type GuidanceInjectionApi,
   GuidanceInjector,
   type GuidanceSkillDiscoverApi,
@@ -360,6 +359,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
     cachedGuidanceInjector ??= new GuidanceInjector({
       snapshotFor: (cwd: string) =>
         cachedGate?.lifecycleStore()?.snapshot(cwd) ?? getLifecycleStateStore().snapshot(cwd),
+      routingSkillPointer: getConfig().config.guidance.routingSkill,
       api: pi as unknown as GuidanceInjectionApi,
     })
     cachedGuidanceInjector.register()
@@ -367,22 +367,17 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
     // Fail-open: guidance injection registration must never break extension load.
   }
 
-  // Task 2.4 (add-cgc-agent-routing-guidance): the opt-in routing skill. The
-  // deep skill ships inside the package (`skills/cgc-routing`) but is offered
-  // to the agent ONLY when `guidance.routingSkill` is set (default false) AND
-  // guidance is ready. Exposure is a `resources_discover` contribution,
-  // evaluated at discovery time (startup/reload) against the same shared
-  // readiness predicate as the always-on card; a readiness transition later in
-  // a session is never applied retroactively. Reads the gate's per-session
-  // lifecycle snapshot (process-lifetime store as fallback) — zero spawns
-  // (ADR 0001). Fail-open: registration must never break extension load.
+  // Task 2.4 (add-cgc-agent-routing-guidance): the routing skill (default on,
+  // opt-out). The deep skill ships inside the package (`skills/cgc-routing`)
+  // and is contributed at discovery whenever `guidance.routingSkill` is
+  // enabled — readiness deliberately does NOT gate discovery (pi fires
+  // `resources_discover` before the gate records any snapshot: gating there
+  // made the skill invisible on every fresh session). Readiness gates the
+  // agent-side pointer on the injected card instead, per turn. Fail-open:
+  // registration must never break extension load.
   try {
     cachedGuidanceSkillExposure ??= new GuidanceSkillExposure({
       enabled: getConfig().config.guidance.routingSkill,
-      readiness: createGuidanceReadiness(
-        (cwd: string) =>
-          cachedGate?.lifecycleStore()?.snapshot(cwd) ?? getLifecycleStateStore().snapshot(cwd),
-      ),
       api: pi as unknown as GuidanceSkillDiscoverApi,
     })
     cachedGuidanceSkillExposure.register()

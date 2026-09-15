@@ -1,5 +1,6 @@
 ---
 name: cgc-routing
+disable-model-invocation: true
 description: >-
   Choose the right CodeGraphContext (CGC) surface for the task at hand: graph
   relationship queries vs built-in search/read, `/cgc` status and indexing

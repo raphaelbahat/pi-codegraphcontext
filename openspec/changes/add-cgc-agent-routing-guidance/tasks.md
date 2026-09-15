@@ -15,5 +15,5 @@
 
 - [x] 3.1 Test the gating matrix across all lifecycle states, the mid-session readiness transition, and the at-most-once injection property.
 - [x] 3.2 Test the no-opt-out property (no config key disables guidelines alone) and the fail-open retry cap.
-- [ ] 3.3 Verify all scenarios in `specs/cgc-agent-guidance/spec.md` against the implementation.
+- [x] 3.3 Verify all scenarios in `specs/cgc-agent-guidance/spec.md` against the implementation. (Host-verified 2026-09-14: extensions/guidance-scenarios.test.ts maps all 10 spec scenarios 1:1 — 18 test blocks, 844/844 suite green; the deferred child's work completed host-side after the unanswered escalation.)
 - [x] 3.4 Run `openspec validate add-cgc-agent-routing-guidance --type change --strict` before archive.

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.3.0...v0.3.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* release PR auto-merge lookup — the action's pr output field is 'number' (not 'prNumber') and the fallback must prefix-match the release-please head branch (the manifest component suffix made the exact name miss); PRs [#2](https://github.com/raphaelbahat/pi-codegraphcontext/issues/2)/[#3](https://github.com/raphaelbahat/pi-codegraphcontext/issues/3) stayed open because both paths silently failed ([c698bd6](https://github.com/raphaelbahat/pi-codegraphcontext/commit/c698bd65b383fb763b2237fad728f820317074b9))
+
+
+### Miscellaneous Chores
+
+* trigger 0.3.1 release ([5477026](https://github.com/raphaelbahat/pi-codegraphcontext/commit/54770269e64f8239375373c7e03b809501d20aef))
+
 ## [0.3.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.2.0...v0.3.0) (2026-09-15)
 
 

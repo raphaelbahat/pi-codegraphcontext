@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.3.2...v0.4.0) (2026-09-15)
+
+
+### Features
+
+* default guidance.routingSkill to true (opt-out) — the always-on card ships by default, hiding its deeper layer by default was inconsistent; the skill is advisory, lazy, ready-gated, and self-limiting ([d1cf0ed](https://github.com/raphaelbahat/pi-codegraphcontext/commit/d1cf0ed71898e8f38bf1f846eb38cf9f961d20ce))
+* layer a bounded CGC HTTP API registry probe ahead of the cgc list fallback for marker-less indexedness ([03d1e37](https://github.com/raphaelbahat/pi-codegraphcontext/commit/03d1e37fcbcbeaa96d9003dd7862ba32d8b4074a))
+* user-executable routing skill — discovery without the readiness race; agent-side pointer stays per-turn; PI_CODING_AGENT_DIR-aware global config ([291ee70](https://github.com/raphaelbahat/pi-codegraphcontext/commit/291ee70a72714743f3e3b3787f0ee9bb7e10865d))
+
+
+### Bug Fixes
+
+* classify indexedness via the CGC repository registry when the filesystem marker is absent (biome-formatted) ([2dfd9f8](https://github.com/raphaelbahat/pi-codegraphcontext/commit/2dfd9f89c82a2664bd7c50c319a4fcbae9bcfe84))
+* npm publish rides the Release Please run — GITHUB_TOKEN-created releases do not fire release-event workflows, so the publish is gated on the post-merge invocation's releases_created (release-publish.yml remains for manually-created releases) ([3d15ced](https://github.com/raphaelbahat/pi-codegraphcontext/commit/3d15ced28f38fc1f3f8fe217a7f0a209a82e1fa9))
+* SAFETY comments on the extension-API seam casts and the registry memoization (review-pass sweep of the pi-lens findings) ([1c38756](https://github.com/raphaelbahat/pi-codegraphcontext/commit/1c38756f030d831c24dfeec8ad192e698b804138))
+
 ## [0.3.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.3.1...v0.3.2) (2026-09-15)
 
 

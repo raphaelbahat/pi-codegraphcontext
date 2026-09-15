@@ -63,8 +63,20 @@ jobs:
       # GITHUB_TOKEN do not fire `release: released` workflows, so the publish must
       # ride the same run that created the release. The gate is THIS invocation's
       # releases_created — true exactly when the tag + Release were just created.
+      # The publish must check out the RELEASE TAG, not the triggering SHA:
+      # the trigger SHA predates the Release PR's version bump (observed
+      # 2026-09-15: the workflow published 0.3.2 from the pre-merge tree while
+      # v0.4.0 was the actual release). The tag is the release the release2
+      # invocation just created.
+      - if: steps.release2.outputs.releases_created == 'true'
+        id: release_tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" >> "$GITHUB_OUTPUT"
       - if: steps.release2.outputs.releases_created == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release_tag.outputs.tag }}
       - if: steps.release2.outputs.releases_created == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

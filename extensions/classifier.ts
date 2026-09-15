@@ -60,6 +60,13 @@ export interface HealthProbeResult {
   cached: boolean
 }
 
+/** Registry-probe outcome for the marker-absent indexedness check. */
+export type RegistryProbe = {
+  outcome: 'found' | 'absent' | 'failed'
+  code: string
+  message: string
+}
+
 export interface LifecycleClassification {
   /** The workspace root the classification applies to (the Pi session cwd). */
   cwd: string
@@ -93,6 +100,13 @@ export interface LifecycleClassifierOptions {
    * absorbing CLI verb changes without touching the classifier logic.
    */
   healthArgs?: readonly string[]
+  /**
+   * Arguments for the repository-registry probe (`cgc list` by default) used
+   * to resolve indexedness when the filesystem marker is absent — the marker
+   * is a Kuzu (bundled) backend artifact and says nothing on Neo4j /
+   * FalkorDB setups. Overridable for tests.
+   */
+  registryArgs?: readonly string[]
 }
 
 /**
@@ -151,6 +165,7 @@ export class LifecycleClassifier {
   private readonly runner: CgcRunner
   private readonly healthProbeTimeoutMs: number
   private readonly healthArgs: readonly string[]
+  private readonly registryArgs: readonly string[]
   /** Per-session health-probe cache, keyed by workspace cwd. */
   private readonly healthCache = new Map<string, Promise<HealthProbeResult>>()
 
@@ -159,6 +174,7 @@ export class LifecycleClassifier {
     this.runner = options.runner
     this.healthProbeTimeoutMs = options.healthProbeTimeoutMs ?? 30_000
     this.healthArgs = options.healthArgs ?? ['stats']
+    this.registryArgs = options.registryArgs ?? ['list']
   }
 
   /**
@@ -189,21 +205,87 @@ export class LifecycleClassifier {
       return this.unavailable(cwd, indexed, probe.message)
     }
 
-    // 2. No .codegraphcontext/ directory: unindexed, no health probe needed.
+    // 2. No .codegraphcontext/ directory: NOT sufficient for `unindexed` on
+    // backends that store the graph outside the workspace. The filesystem
+    // marker is a Kuzu (bundled) artifact; Neo4j / FalkorDB setups never have
+    // it, and their `cgc stats` output is global to the database (identical
+    // for indexed and unindexed workspaces), so the marker is the only
+    // backend-agnostic cheap signal. When it is absent, consult the CGC
+    // repository registry (`cgc list` — the authoritative per-workspace
+    // indexedness record, the same check `cgc watch` uses for its
+    // "Already indexed" verdict) before declaring the workspace unindexed.
     if (!indexed) {
+      const registry = await this.registryProbe(cwd)
+      if (registry.outcome === 'found') {
+        // Registry override: the workspace IS indexed on this backend; the
+        // health probe decides clean/drift/corrupt exactly as for the
+        // marker-present path.
+        const health = await this.healthProbe(cwd)
+        return this.fromHealthProbe(
+          cwd,
+          true,
+          probe,
+          health,
+          `registry override: cgc list records ${cwd} as indexed despite the missing ${'.codegraphcontext/'} directory`,
+        )
+      }
+      if (registry.outcome === 'failed') {
+        // Doctrine (design D2): uncertainty is corrupt-adjacent unknown — a
+        // CGC that cannot even report its registry is failing beyond the
+        // indexedness question, and the corrupt path never acts without
+        // explicit confirmation. BUSY keeps its own state (a lock is not a
+        // corruption signal).
+        if (registry.code === 'BUSY') {
+          return {
+            cwd,
+            state: 'busy',
+            indexed,
+            probe,
+            health: null,
+            reason:
+              'index registry probe (cgc list) hit the database lock; another CGC process holds it',
+            at: Date.now(),
+          }
+        }
+        return {
+          cwd,
+          state: 'corrupt',
+          indexed,
+          probe,
+          health: null,
+          reason: `index registry probe was inconclusive (${registry.message}); failing safe as corrupt-adjacent unknown (no action without confirmation)`,
+          at: Date.now(),
+        }
+      }
       return {
         cwd,
         state: 'unindexed',
         indexed,
         probe,
         health: null,
-        reason: `no ${'.codegraphcontext/'} directory in ${cwd}`,
+        reason: `no ${'.codegraphcontext/'} directory in ${cwd} and the CGC repository registry does not list it`,
         at: Date.now(),
       }
     }
 
     // 3. Indexed + available: the bounded status/stats probe decides.
     const health = await this.healthProbe(cwd)
+    return this.fromHealthProbe(cwd, indexed, probe, health, '')
+  }
+
+  /**
+   * Map a health-probe outcome onto a classification — shared by the
+   * marker-present path and the registry-override path. `reasonPrefix`, when
+   * non-empty, is prepended to every reason for observability.
+   */
+  private fromHealthProbe(
+    cwd: string,
+    indexed: boolean,
+    probe: CgcProbeResult,
+    health: HealthProbeResult,
+    reasonPrefix: string,
+  ): LifecycleClassification {
+    const prefix = reasonPrefix ? `${reasonPrefix}; ` : ''
 
     if (health.code === 'BUSY') {
       return {
@@ -212,7 +294,7 @@ export class LifecycleClassifier {
         indexed,
         probe,
         health,
-        reason: 'another CGC process holds the embedded database (lock conflict)',
+        reason: `${prefix}another CGC process holds the embedded database (lock conflict)`,
         at: Date.now(),
       }
     }
@@ -226,7 +308,7 @@ export class LifecycleClassifier {
             indexed,
             probe,
             health,
-            reason: 'index health probe succeeded and reported no staleness',
+            reason: `${prefix}index health probe succeeded and reported no staleness`,
             at: Date.now(),
           }
         case 'drift':
@@ -236,7 +318,7 @@ export class LifecycleClassifier {
             indexed,
             probe,
             health,
-            reason: 'index health probe reported staleness/drift markers',
+            reason: `${prefix}index health probe reported staleness/drift markers`,
             at: Date.now(),
           }
         case 'corrupt':
@@ -246,7 +328,7 @@ export class LifecycleClassifier {
             indexed,
             probe,
             health,
-            reason: 'index health probe reported corruption markers',
+            reason: `${prefix}index health probe reported corruption markers`,
             at: Date.now(),
           }
         case 'unparseable':
@@ -260,24 +342,68 @@ export class LifecycleClassifier {
             indexed,
             probe,
             health,
-            reason:
-              'index health probe output was unparseable; failing safe as corrupt-adjacent unknown (no action without confirmation)',
+            reason: `${prefix}index health probe output was unparseable; failing safe as corrupt-adjacent unknown (no action without confirmation)`,
             at: Date.now(),
           }
       }
     }
 
-    // 4. Any other inconclusive probe outcome (failed command, timeout,
-    //    cancellation, spawn failure after a successful liveness probe) is
-    //    unknown, not healthy: fail safe into the corrupt bucket.
+    // Any other inconclusive probe outcome (failed command, timeout,
+    // cancellation, spawn failure after a successful liveness probe) is
+    // unknown, not healthy: fail safe into the corrupt bucket.
     return {
       cwd,
       state: 'corrupt',
       indexed,
       probe,
       health,
-      reason: `index health probe was inconclusive (${health.message}); failing safe as corrupt-adjacent unknown (no action without confirmation)`,
+      reason: `${prefix}index health probe was inconclusive (${health.message}); failing safe as corrupt-adjacent unknown (no action without confirmation)`,
       at: Date.now(),
+    }
+  }
+
+  /**
+   * Resolve indexedness against the CGC repository registry (`cgc list`) —
+   * the authoritative per-workspace record for backends that keep the graph
+   * outside the workspace (Neo4j / FalkorDB), where the filesystem marker
+   * never exists and `stats` output is global to the database (identical for
+   * indexed and unindexed workspaces).
+   */
+  private async registryProbe(cwd: string): Promise<RegistryProbe> {
+    let result: Awaited<ReturnType<CgcRunner['run']>>
+    try {
+      result = await this.runner.run(cwd, {
+        args: this.registryArgs,
+        timeoutMs: this.healthProbeTimeoutMs,
+      })
+    } catch (error) {
+      return {
+        outcome: 'failed',
+        code: 'COMMAND_FAILED',
+        message: `index registry probe failed unexpectedly: ${errorMessage(error)}`,
+      }
+    }
+    if (!result.ok) {
+      return {
+        outcome: 'failed',
+        code: result.code,
+        message: `cgc ${this.registryArgs.join(' ')}: ${result.message}`,
+      }
+    }
+    // Line-based match: the workspace path must appear as its own table cell —
+    // a cell boundary (box-drawing or plain pipe) or end-of-line right after
+    // the path. A bare substring match would false-positive on prefix paths
+    // (e.g. /repo and /repo-old listed in the same registry).
+    const listed = result.stdout.split('\n').some((line) => {
+      const at = line.indexOf(cwd)
+      if (at === -1) return false
+      const rest = line.slice(at + cwd.length)
+      return /^\s*[│|]/.test(rest) || rest.trim() === ''
+    })
+    return {
+      outcome: listed ? 'found' : 'absent',
+      code: result.code,
+      message: `cgc ${this.registryArgs.join(' ')}: ${result.message}`,
     }
   }
 

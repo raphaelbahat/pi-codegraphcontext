@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.3.1...v0.3.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* create the tag + GitHub Release in the same Release Please run — the merge push (GITHUB_TOKEN) does not trigger workflows, so the release was never created after the auto-merge; re-run the idempotent action post-merge, letting the release event fire npm publish ([83d7944](https://github.com/raphaelbahat/pi-codegraphcontext/commit/83d7944661bb6d163ff2629c0130ae07f95dfd31))
+
 ## [0.3.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.3.0...v0.3.1) (2026-09-15)
 
 

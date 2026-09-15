@@ -14,6 +14,6 @@
 ## 3. Verification and closure
 
 - [x] 3.1 Test the gating matrix across all lifecycle states, the mid-session readiness transition, and the at-most-once injection property.
-- [ ] 3.2 Test the no-opt-out property (no config key disables guidelines alone) and the fail-open retry cap.
+- [x] 3.2 Test the no-opt-out property (no config key disables guidelines alone) and the fail-open retry cap.
 - [ ] 3.3 Verify all scenarios in `specs/cgc-agent-guidance/spec.md` against the implementation.
-- [ ] 3.4 Run `openspec validate add-cgc-agent-routing-guidance --type change --strict` before archive.
+- [x] 3.4 Run `openspec validate add-cgc-agent-routing-guidance --type change --strict` before archive.

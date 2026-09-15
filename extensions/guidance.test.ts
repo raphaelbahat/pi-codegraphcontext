@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type { LifecycleState } from './classifier'
+import { CONFIG_ENV_VARS, DEFAULT_CONFIG, loadConfig } from './config'
 import {
   createGuidanceReadiness,
   GUIDANCE_CARD,
@@ -563,5 +564,139 @@ describe('guidance gating matrix (task 3.1)', () => {
     }
     expect(isGuidanceReadyForSnapshot(null)).toBe(isGuidanceReady(null))
     expect(isGuidanceReadyForSnapshot(undefined)).toBe(isGuidanceReady(undefined))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 3.2: the no-opt-out property (design D2, spec "Guidelines have no
+// opt-out of their own") and the fail-open retry cap (spec "Fail-open guidance
+// delivery": a failing injection is not retried more than once per session).
+// ---------------------------------------------------------------------------
+
+describe('guidance no-opt-out property (task 3.2)', () => {
+  it('registers no config key that can disable the always-on guidelines alone', () => {
+    // The guidance config section carries exactly the opt-in routing skill:
+    // there is deliberately no card/guidelines/always-on switch of its own.
+    expect(Object.keys(DEFAULT_CONFIG.guidance)).toEqual(['routingSkill'])
+
+    // Across the WHOLE extension config surface the only `guidance.*` key is
+    // that routing-skill opt-in — no sibling key names the always-on card.
+    const guidanceKeys = Object.keys(CONFIG_ENV_VARS).filter((key) => key.startsWith('guidance.'))
+    expect(guidanceKeys).toEqual(['guidance.routingSkill'])
+    expect(CONFIG_ENV_VARS['guidance.routingSkill']).toBe('CGC_GUIDANCE_ROUTING_SKILL')
+
+    // No key in ANY section even names the guideline/card layer, so there is
+    // nothing a user could flip to remove the card while keeping the extension.
+    const cardish = Object.keys(CONFIG_ENV_VARS).filter((key) =>
+      /guideline|always[-_.]?on|card|routingrules|routing-rules/i.test(key),
+    )
+    expect(cardish).toEqual([])
+  })
+
+  it('ignores invented guidance off-switch keys instead of honoring them', () => {
+    // A user cannot opt out by hand-writing a key: unknown names are not part
+    // of the config surface, so the effective guidance section still holds
+    // only the routing-skill flag and the card stays on.
+    const result = loadConfig({
+      env: {
+        CGC_GUIDANCE_ENABLED: 'false',
+        CGC_GUIDANCE_ALWAYS_ON: 'false',
+        CGC_GUIDANCE_GUIDELINES: 'false',
+      },
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(Object.keys(result.config.guidance)).toEqual(['routingSkill'])
+    expect(result.config.guidance.routingSkill).toBe(false)
+    expect(result.sources['guidance.routingSkill']).toBe('default')
+  })
+
+  it('delivers the always-on card regardless of the routing-skill opt-in', () => {
+    // `guidance.routingSkill` gates ONLY the deeper skill exposure; the card
+    // itself has no input through which any config value could turn it off.
+    for (const routingSkill of [false, true]) {
+      const loaded = loadConfig({
+        env: { CGC_GUIDANCE_ROUTING_SKILL: String(routingSkill) },
+        cwd: '/nonexistent',
+        homeDir: '/nonexistent',
+      })
+      expect(loaded.config.guidance.routingSkill).toBe(routingSkill)
+
+      const { injector, sessionStart, beforeAgentStart } = makeGuidanceHarness({
+        snapshotFor: () => snapshot('clean'),
+      })
+      sessionStart('/repo')
+      expect(returnedPrompt(beforeAgentStart(promptEvent('pi system prompt')))).toBe(
+        `pi system prompt\n\n${GUIDANCE_CARD}`,
+      )
+      expect(injector.hasInjected()).toBe(true)
+    }
+  })
+})
+
+describe('guidance fail-open retry cap (task 3.2)', () => {
+  it('attempts a failing delivery at most RETRY_BUDGET + 1 times, then goes silent', () => {
+    expect(GUIDANCE_RETRY_BUDGET).toBe(1)
+    let attempts = 0
+    const reported: string[] = []
+    const { injector, sessionStart, beforeAgentStart } = makeGuidanceHarness({
+      snapshotFor: () => {
+        attempts += 1
+        throw new Error('prompt mechanism rejected the payload')
+      },
+      onError: (message) => reported.push(message),
+    })
+    sessionStart('/repo')
+
+    // Initial attempt + exactly ONE retry = RETRY_BUDGET + 1 total attempts.
+    for (let i = 0; i < GUIDANCE_RETRY_BUDGET + 1; i += 1) {
+      expect(() => beforeAgentStart(promptEvent())).not.toThrow()
+    }
+    expect(attempts).toBe(GUIDANCE_RETRY_BUDGET + 1)
+    expect(injector.failedDeliveries()).toBe(GUIDANCE_RETRY_BUDGET + 1)
+    expect(injector.isSilenced()).toBe(true)
+    expect(injector.recordedErrors()).toHaveLength(GUIDANCE_RETRY_BUDGET + 1)
+    expect(reported).toHaveLength(GUIDANCE_RETRY_BUDGET + 1)
+
+    // Silenced for the rest of the session: the broken surface is never
+    // touched again, so the agent loop is never hit by an endless retry.
+    for (let turn = 0; turn < 5; turn += 1) {
+      expect(beforeAgentStart(promptEvent())).toBeUndefined()
+    }
+    expect(attempts).toBe(GUIDANCE_RETRY_BUDGET + 1)
+    expect(injector.failedDeliveries()).toBe(GUIDANCE_RETRY_BUDGET + 1)
+    expect(injector.isSilenced()).toBe(true)
+    expect(injector.hasInjected()).toBe(false)
+  })
+
+  it('never spends the retry budget on a not-ready deferral, only on failures', () => {
+    let mode: 'defer' | 'fail' | 'ready' = 'defer'
+    const { injector, sessionStart, beforeAgentStart } = makeGuidanceHarness({
+      snapshotFor: () => {
+        if (mode === 'fail') throw new Error('snapshot store exploded')
+        return mode === 'ready' ? snapshot('clean') : snapshot('unindexed')
+      },
+    })
+    sessionStart('/repo')
+
+    // Many deferrals: no failure is recorded and no budget is consumed.
+    for (let turn = 0; turn < 5; turn += 1) {
+      expect(beforeAgentStart(promptEvent())).toBeUndefined()
+    }
+    expect(injector.failedDeliveries()).toBe(0)
+    expect(injector.isSilenced()).toBe(false)
+
+    // A single contained failure still leaves the one permitted retry unused.
+    mode = 'fail'
+    expect(beforeAgentStart(promptEvent())).toBeUndefined()
+    expect(injector.failedDeliveries()).toBe(1)
+    expect(injector.isSilenced()).toBe(false)
+
+    // The next ready turn still injects: the budget caps failures, not delivery.
+    mode = 'ready'
+    expect(returnedPrompt(beforeAgentStart(promptEvent('pi system prompt')))).toBe(
+      `pi system prompt\n\n${GUIDANCE_CARD}`,
+    )
+    expect(injector.hasInjected()).toBe(true)
   })
 })

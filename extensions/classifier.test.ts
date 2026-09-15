@@ -55,6 +55,7 @@ class MockRunner {
   calls: { cwd: string; args: readonly string[]; timeoutMs?: number | undefined }[] = []
   livenessResults: CgcCommandResult[] = []
   healthResults: CgcCommandResult[] = []
+  registryResults: CgcCommandResult[] = []
   /** When set, replaces the implementation entirely (failure-injection tests). */
   overrideRun?: (
     cwd: string,
@@ -72,6 +73,10 @@ class MockRunner {
     if (options.args[0] === '--version') {
       const result =
         this.livenessResults.shift() ?? makeResult({ stdout: VERSION_OUTPUT, argv: ['--version'] })
+      return Promise.resolve(result)
+    }
+    if (options.args[0] === 'list') {
+      const result = this.registryResults.shift() ?? makeResult({ stdout: '', argv: ['list'] })
       return Promise.resolve(result)
     }
     const result = this.healthResults.shift() ?? makeResult({ stdout: STATS_OUTPUT })
@@ -165,8 +170,11 @@ describe('five-state classification', () => {
       expect(result.state).toBe('unindexed')
       expect(result.indexed).toBe(false)
       expect(result.health).toBeNull()
-      // Only the cached liveness probe runs; no stats spawn.
-      expect(mock.calls).toHaveLength(1)
+      // Only the cached liveness probe and the registry probe run; no stats
+      // spawn. The registry probe is the indexedness authority on backends
+      // without the filesystem marker.
+      expect(mock.calls).toHaveLength(2)
+      expect(mock.calls[1]?.args).toEqual(['list'])
     } finally {
       cleanupWorkspace(workspace)
     }
@@ -419,6 +427,158 @@ describe('health probe result shape', () => {
       expect(health.code).toBe('OK')
       expect(health.durationMs).toBe(42)
       expect(health.message).toContain('stats')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+})
+
+describe('registry-backed indexedness (non-bundled backends)', () => {
+  /** Realistic `cgc list` table with the given workspace paths registered. */
+  const listOutput = (paths: string[]): string =>
+    [
+      'Services initialized.',
+      '┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓',
+      '┃ Name                ┃ Path                         ┃ Type  ┃',
+      '┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━┩',
+      ...paths.map((p) => `│ repo                │ ${p} │ Project │`),
+      '└─────────────────────┴──────────────────────────────┴───────┘',
+    ].join('\n')
+
+  it('regression: a neo4j-indexed workspace without the filesystem marker is classified via the registry, not unindexed', async () => {
+    const workspace = makeWorkspace()
+    try {
+      // No `seedIndex` — exactly the reported failure shape: the graph lives
+      // on a Neo4j server, so `.codegraphcontext/` does not exist, yet cgc
+      // itself reports the workspace as indexed.
+      const mock = new MockRunner()
+      mock.registryResults.push(makeResult({ stdout: listOutput([workspace]), argv: ['list'] }))
+      const classifier = makeClassifier(mock, workspace)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('clean')
+      expect(result.indexed).toBe(true)
+      expect(result.reason).toContain('registry override')
+      // The registry probe and the health probe both ran through the runner.
+      expect(mock.calls.some((c) => c.args[0] === 'list')).toBe(true)
+      expect(mock.calls.some((c) => c.args[0] === 'stats')).toBe(true)
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('a workspace absent from the registry stays unindexed', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      mock.registryResults.push(
+        makeResult({ stdout: listOutput(['/elsewhere/repo']), argv: ['list'] }),
+      )
+      const classifier = makeClassifier(mock, workspace)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('unindexed')
+      expect(result.reason).toContain('registry does not list it')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('a prefix-path registry row does not false-positive the cell match', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      // `${workspace}-old` is registered; the workspace itself is not. A bare
+      // substring match would see the workspace as a prefix of the listed
+      // path and wrongly claim `found`.
+      mock.registryResults.push(
+        makeResult({ stdout: listOutput([`${workspace}-old`]), argv: ['list'] }),
+      )
+      const classifier = makeClassifier(mock, workspace)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('unindexed')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('a failed registry probe fails safe as corrupt-adjacent unknown', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      mock.registryResults.push(
+        makeResult({
+          ok: false,
+          code: 'COMMAND_FAILED',
+          stdout: '',
+          stderr: 'boom',
+          argv: ['list'],
+        }),
+      )
+      const classifier = makeClassifier(mock, workspace)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('corrupt')
+      expect(result.reason).toContain('registry probe was inconclusive')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('a BUSY registry probe surfaces busy, not corrupt', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      mock.registryResults.push(
+        makeResult({
+          ok: false,
+          code: 'BUSY',
+          stdout: '',
+          stderr: 'Could not set lock on file',
+          argv: ['list'],
+        }),
+      )
+      const classifier = makeClassifier(mock, workspace)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('busy')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('the marker-present path never consults the registry (cheap path preserved)', async () => {
+    const workspace = makeWorkspace()
+    try {
+      seedIndex(workspace)
+      const mock = new MockRunner()
+      const classifier = makeClassifier(mock, workspace)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('clean')
+      expect(result.reason).not.toContain('registry')
+      expect(mock.calls.some((c) => c.args[0] === 'list')).toBe(false)
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('the registry override keeps the drift routing (staleness markers decide)', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      mock.registryResults.push(makeResult({ stdout: listOutput([workspace]), argv: ['list'] }))
+      mock.healthResults.push(
+        makeResult({
+          stdout: 'Stats: 1 repository\nRepository is stale: 12 files changed since last sync',
+        }),
+      )
+      const classifier = makeClassifier(mock, workspace)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('drift')
+      expect(result.reason).toContain('registry override')
     } finally {
       cleanupWorkspace(workspace)
     }

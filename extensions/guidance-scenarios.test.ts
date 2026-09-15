@@ -99,11 +99,10 @@ function makeGuidanceHarness(
 }
 
 /** Register a real GuidanceSkillExposure and expose its discovery handler. */
-function makeSkillHarness(options: { enabled: boolean; ready: boolean }) {
+function makeSkillHarness(options: { enabled: boolean }) {
   const handlers: Array<(event: unknown) => unknown> = []
   const exposure = new GuidanceSkillExposure({
     enabled: options.enabled,
-    readiness: () => options.ready,
     api: {
       on: (_event: 'resources_discover', handler: (event: unknown, ctx: unknown) => unknown) =>
         handlers.push(handler as (event: unknown) => unknown),
@@ -265,18 +264,18 @@ describe('spec scenarios: routing skill exposure (default on, opt-out)', () => {
     // so only the runtime discovery handler can expose it.
     expect(PACKAGE_JSON.pi?.skills).toContain('!skills/cgc-routing/**')
 
-    const { discover } = makeSkillHarness({ enabled: true, ready: true })
+    const { discover } = makeSkillHarness({ enabled: true })
     expect(discover()).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
   })
 
   it('Scenario "Skill opted out": an explicit false hides it', () => {
-    const { discover } = makeSkillHarness({ enabled: false, ready: true })
+    const { discover } = makeSkillHarness({ enabled: false })
     expect(discover()).toBeUndefined()
   })
 
   it('Scenario "Skill enabled": the agent can consult the four onboarding topics', () => {
     // Opted in and ready -> the skill path is contributed.
-    const { discover } = makeSkillHarness({ enabled: true, ready: true })
+    const { discover } = makeSkillHarness({ enabled: true })
     expect(discover()).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
     // The bundled skill really is the routing skill and is version-scoped to
     // the same CGC range as the always-on card.
@@ -291,14 +290,15 @@ describe('spec scenarios: routing skill exposure (default on, opt-out)', () => {
     expect(skill).toContain('indexing basics')
   })
 
-  it('Scenario "Skill discoverability is evaluated at discovery time": never retroactive mid-session', () => {
-    // The startup discovery ran while guidance was not ready and contributed
-    // nothing; a later readiness change does not rewrite that outcome.
-    let ready = false
+  it('Scenario "Skill user-executable when enabled": contributed at discovery, readiness gates the agent side per turn', () => {
+    // Discovery contributes whenever the flag is enabled — pi fires
+    // resources_discover BEFORE the gate's background classification records
+    // any snapshot, so readiness must not gate this path (the observed bug:
+    // the skill was invisible on every fresh session). The agent-side pointer
+    // is evaluated per turn instead (the injector's routingSkillPointer).
     const handlers: Array<(event: unknown) => unknown> = []
     const exposure = new GuidanceSkillExposure({
       enabled: true,
-      readiness: () => ready,
       api: {
         on: (_event: 'resources_discover', handler: (event: unknown, ctx: unknown) => unknown) =>
           handlers.push(handler as (event: unknown) => unknown),
@@ -306,11 +306,9 @@ describe('spec scenarios: routing skill exposure (default on, opt-out)', () => {
     })
     exposure.register()
 
-    expect(handlers[0]?.({ cwd: '/repo', reason: 'startup' })).toBeUndefined()
-    // Readiness arriving later does not alter the already-evaluated discovery;
-    // only the NEXT discovery evaluation sees the skill.
-    ready = true
-    expect(handlers[0]?.({ cwd: '/repo', reason: 'reload' })).toEqual({
+    // A fresh session: no snapshot recorded yet — the skill is still
+    // contributed (user-executable via /skill:cgc-routing).
+    expect(handlers[0]?.({ cwd: '/repo', reason: 'startup' })).toEqual({
       skillPaths: [GUIDANCE_ROUTING_SKILL_PATH],
     })
   })

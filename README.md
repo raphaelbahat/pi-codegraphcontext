@@ -117,7 +117,7 @@ The status HUD reflects all of this live; no command is needed to see the state.
   [MCP tools documentation](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/MCP_TOOLS.md).
 - **The always-on guideline card** steering tool choice: graph for relationships,
   built-in search for exact strings.
-- **The `cgc-routing` skill** (on by default; opt out with `guidance.routingSkill: false`) with intent-first
+- **The `cgc-routing` skill** (on by default; opt out with `guidance.routingSkill: false`) with intent-first — user-executable via `/skill:cgc-routing`
   tool-choice detail.
 - **The CLI-gap tools** filling the MCP catalog gaps.
 - **The [agent guide](docs/agent-guide.md)** — the deep, intent-first reference the card
@@ -128,7 +128,7 @@ The status HUD reflects all of this live; no command is needed to see the state.
 Configuration is resolved in this order (each layer overrides the previous one):
 
 1. Built-in defaults
-2. Global config file — `~/.pi/agent/cgc.json`
+2. Global config file — `$PI_CODING_AGENT_DIR/cgc.json` (default `~/.pi/agent/cgc.json`)
 3. Project config file — `.pi/cgc.json` (wins on conflict)
 4. Environment variables (for headless/CI setups)
 

@@ -81,11 +81,17 @@ Rule: The extension SHALL provide a routing skill containing deeper CGC onboardi
 - **WHEN** a session starts with guidance ready
 - **THEN** the agent can consult the routing skill for tool-choice-by-intent, backend caveats, the CGC path sandbox, and indexing basics
 
-#### Scenario: Skill discoverability is evaluated at discovery time
+#### Scenario: Skill user-executable when enabled
 
-- **GIVEN** the routing skill is enabled (the default) and guidance was not ready when the session's skill discovery ran
+- **GIVEN** the routing skill is enabled (the default)
+- **WHEN** skill discovery runs
+- **THEN** the skill is contributed and is user-executable via `/skill:cgc-routing`, regardless of guidance readiness at discovery time
+
+#### Scenario: Agent-side availability follows readiness per turn
+
+- **GIVEN** the routing skill is enabled and guidance was not ready at discovery
 - **WHEN** guidance readiness first becomes true later in the same session
-- **THEN** the routing skill's discoverability is not changed retroactively mid-session; it is offered at a discovery evaluation only when the opt-in flag is set and guidance is ready
+- **THEN** the agent-facing routing pointer is injected on the first ready turn (per-turn evaluation, never a discovery-time race)
 
 ### Requirement: Fail-open guidance delivery
 

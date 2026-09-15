@@ -3,7 +3,9 @@
 //
 // Resolution order (lowest to highest precedence):
 //   1. Built-in defaults
-//   2. Optional JSON config files (global ~/.pi/agent/cgc.json, project .pi/cgc.json)
+//   2. Optional JSON config files (global <agent-dir>/cgc.json — the Pi agent
+//      directory: PI_CODING_AGENT_DIR when set, else ~/.pi/agent — then project
+//      .pi/cgc.json)
 //   3. Environment-variable overrides (headless/CI use)
 //
 // Loading is fail-open: unreadable or invalid layers are skipped and recorded
@@ -815,6 +817,26 @@ function applyEnvLayer(
  * Resolve the effective extension configuration. Never throws; problems are
  * recorded in `warnings` and the affected value falls back to a lower layer.
  */
+/**
+ * Resolve Pi's agent directory (the global config home): the
+ * `PI_CODING_AGENT_DIR` environment variable when set (a leading `~` expands
+ * against `homeDir`), else `<homeDir>/.pi/agent` — the same resolution pi
+ * itself uses, so the extension reads the user's actual global config. The
+ * override is read from `env` (the config layer's environment, so tests inject
+ * it like every other override), falling back to the process environment.
+ */
+export function resolvePiAgentDir(
+  homeDir: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const override = env.PI_CODING_AGENT_DIR
+  if (override !== undefined && override.trim().length > 0) {
+    const trimmed = override.trim()
+    return trimmed.startsWith('~') ? join(homeDir, trimmed.slice(1)) : trimmed
+  }
+  return join(homeDir, '.pi', 'agent')
+}
+
 export function loadConfig(options: LoadConfigOptions = {}): ConfigResult {
   const warnings: string[] = []
   const sources = Object.fromEntries(
@@ -825,8 +847,14 @@ export function loadConfig(options: LoadConfigOptions = {}): ConfigResult {
   const homeDir = options.homeDir ?? homedir()
   const cwd = options.cwd ?? process.cwd()
 
-  // Layer 2: JSON config files (global first, project wins on conflict).
-  const globalFile = readConfigFile(join(homeDir, '.pi', 'agent', 'cgc.json'), 'config', warnings)
+  // Layer 2: JSON config files (global first, project wins on conflict). The
+  // global file lives in Pi's agent directory — PI_CODING_AGENT_DIR overrides
+  // the default ~/.pi/agent (tilde-expanded), matching pi's own resolution.
+  const globalFile = readConfigFile(
+    join(resolvePiAgentDir(homeDir, options.env), 'cgc.json'),
+    'config',
+    warnings,
+  )
   applyFileLayer(globalFile, 'config', config, sources, warnings)
   const projectFile = readConfigFile(join(cwd, '.pi', 'cgc.json'), 'config', warnings)
   applyFileLayer(projectFile, 'config', config, sources, warnings)

@@ -303,11 +303,7 @@ describe('guidance one-shot injection (task 2.2)', () => {
  * evaluated per discovery event (never retroactively mid-session).
  */
 describe('guidance routing-skill exposure (task 2.4)', () => {
-  function makeSkillHarness(options: {
-    enabled: boolean
-    ready?: boolean
-    throwOnReady?: boolean
-  }) {
+  function makeSkillHarness(options: { enabled: boolean }) {
     const handlers: Array<(event: unknown, ctx: unknown) => unknown> = []
     const api = {
       on(_event: 'resources_discover', handler: (event: unknown, ctx: unknown) => unknown) {
@@ -317,10 +313,6 @@ describe('guidance routing-skill exposure (task 2.4)', () => {
     const reported: string[] = []
     const exposure = new GuidanceSkillExposure({
       enabled: options.enabled,
-      readiness: () => {
-        if (options.throwOnReady) throw new Error('snapshot store exploded')
-        return options.ready ?? true
-      },
       api,
       onError: (message) => reported.push(message),
     })
@@ -332,51 +324,77 @@ describe('guidance routing-skill exposure (task 2.4)', () => {
     }
   }
 
-  it('offers the bundled skill when opted in and ready', () => {
-    const { discover } = makeSkillHarness({ enabled: true, ready: true })
+  it('offers the bundled skill when enabled (the default)', () => {
+    const { discover } = makeSkillHarness({ enabled: true })
     expect(discover('/repo')).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
   })
 
-  it('is disabled by default: contributes nothing when not opted in', () => {
-    const { discover } = makeSkillHarness({ enabled: false, ready: true })
+  it('contributes nothing when opted out (enabled: false)', () => {
+    const { discover } = makeSkillHarness({ enabled: false })
     expect(discover('/repo')).toBeUndefined()
   })
 
-  it('contributes nothing when opted in but guidance is not ready', () => {
-    const { discover } = makeSkillHarness({ enabled: true, ready: false })
-    expect(discover('/repo')).toBeUndefined()
+  it('contributes regardless of readiness — readiness gates the agent-side pointer, not discovery', () => {
+    // pi fires resources_discover BEFORE the gate's background classification
+    // records any snapshot; a readiness gate here made the skill invisible on
+    // every fresh session (the observed bug). Discovery is flag-gated only.
+    const { discover } = makeSkillHarness({ enabled: true })
+    expect(discover('/repo')).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
   })
 
-  it('does not apply a readiness transition retroactively (evaluated per discovery event)', () => {
-    // Readiness is read afresh per discovery, so a reload discovers the skill
-    // once ready; the earlier startup discovery was simply quiet.
-    let ready = false
-    const handlers: Array<(event: unknown) => unknown> = []
-    const exposure = new GuidanceSkillExposure({
-      enabled: true,
-      readiness: () => ready,
-      api: {
-        on: (_event: 'resources_discover', handler: (event: unknown, ctx: unknown) => unknown) =>
-          handlers.push(handler as (event: unknown) => unknown),
-      } as unknown as GuidanceSkillDiscoverApi,
-    })
-    exposure.register()
-    expect(handlers[0]?.({ cwd: '/repo' })).toBeUndefined()
-    ready = true
-    expect(handlers[0]?.({ cwd: '/repo' })).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
-  })
-
-  it('is fail-open: a throwing readiness check is recorded and contributes nothing', () => {
-    const { exposure, reported, discover } = makeSkillHarness({ enabled: true, throwOnReady: true })
-    expect(() => discover('/repo')).not.toThrow()
-    expect(discover('/repo')).toBeUndefined()
-    expect(exposure.recordedErrors()).toHaveLength(2)
-    expect(reported).toHaveLength(2)
+  it('is evaluated per discovery event (startup and reload both contribute)', () => {
+    const { discover } = makeSkillHarness({ enabled: true })
+    expect(discover('/repo')).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
+    expect(discover('/repo')).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
   })
 
   it('registers nothing when no API is supplied', () => {
-    const exposure = new GuidanceSkillExposure({ enabled: true, readiness: () => true })
+    const exposure = new GuidanceSkillExposure({ enabled: true })
     expect(() => exposure.register()).not.toThrow()
+  })
+
+  describe('routing-skill user pointer (injection-time, readiness-gated)', () => {
+    function makeInjectorHarness(options: { pointer?: boolean; ready?: boolean }) {
+      const handlers: Array<(event: unknown, ctx: unknown) => unknown> = []
+      const api = {
+        on: (event: 'before_agent_start', handler: (event: unknown, ctx: unknown) => unknown) => {
+          if (event !== 'before_agent_start') return
+          handlers.push(handler)
+        },
+      } as unknown as GuidanceInjectionApi
+      const injector = new GuidanceInjector({
+        snapshotFor: () => snapshot('clean'),
+        readiness: () => options.ready ?? true,
+        routingSkillPointer: options.pointer ?? false,
+        api,
+      })
+      injector.register()
+      return {
+        inject: () =>
+          handlers[0]?.({ systemPrompt: 'BASE', systemPromptOptions: { cwd: '/repo' } }, {}) as
+            | { systemPrompt: string }
+            | undefined,
+      }
+    }
+
+    it('appends the /skill:cgc-routing pointer when the flag is on and guidance is ready', () => {
+      const { inject } = makeInjectorHarness({ pointer: true, ready: true })
+      const out = inject()
+      expect(out?.systemPrompt).toContain('/skill:cgc-routing')
+      expect(out?.systemPrompt).toContain(GUIDANCE_CARD)
+    })
+
+    it('omits the pointer when the flag is off (the card alone)', () => {
+      const { inject } = makeInjectorHarness({ pointer: false, ready: true })
+      const out = inject()
+      expect(out?.systemPrompt).not.toContain('/skill:cgc-routing')
+      expect(out?.systemPrompt).toContain(GUIDANCE_CARD)
+    })
+
+    it('defers the whole delivery when not ready (the pointer rides the card, never leads it)', () => {
+      const { inject } = makeInjectorHarness({ pointer: true, ready: false })
+      expect(inject()).toBeUndefined()
+    })
   })
 })
 
@@ -523,12 +541,16 @@ describe('guidance gating matrix (task 3.1)', () => {
     expect(injector.hasInjected()).toBe(true)
   })
 
-  it('gates the routing skill (default on, opt-out) on the same matrix at discovery time', () => {
-    for (const state of GATING_MATRIX_STATES) {
+  it('contributes at discovery regardless of the lifecycle state — readiness gates the agent-side pointer instead', () => {
+    // Discovery is flag-gated only: pi fires resources_discover before the
+    // gate records any snapshot, so the readiness matrix must not decide
+    // discoverability (the observed bug). The matrix governs the injector's
+    // per-turn pointer instead (asserted by the gating-matrix tests above).
+    // The loop documents that EVERY state — ready or not — contributes.
+    for (const _state of GATING_MATRIX_STATES) {
       const handlers: Array<(event: unknown, ctx: unknown) => unknown> = []
       const exposure = new GuidanceSkillExposure({
         enabled: true,
-        readiness: createGuidanceReadiness(() => matrixSnapshot(state, 'idle')),
         api: {
           on: (
             _event: 'resources_discover',
@@ -540,12 +562,9 @@ describe('guidance gating matrix (task 3.1)', () => {
       })
       exposure.register()
 
-      const result = handlers[0]?.({ cwd: '/repo' }, {})
-      if (IDLE_READY_STATES.has(state)) {
-        expect(result).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
-      } else {
-        expect(result).toBeUndefined()
-      }
+      expect(handlers[0]?.({ cwd: '/repo' }, {})).toEqual({
+        skillPaths: [GUIDANCE_ROUTING_SKILL_PATH],
+      })
     }
   })
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { ApiRegistryProbe } from './api-registry'
 import { type HealthProbeResult, LifecycleClassifier, parseHealthProbe } from './classifier'
 import type { CgcCommandResult, CgcRunner } from './runner'
 import { WorkspaceDetector } from './workspace'
@@ -579,6 +580,161 @@ describe('registry-backed indexedness (non-bundled backends)', () => {
       const result = await classifier.classify(workspace)
       expect(result.state).toBe('drift')
       expect(result.reason).toContain('registry override')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+})
+
+describe('api-backed indexedness probe chain (add-cgc-api-registry-probe)', () => {
+  /** Realistic `cgc list` table with the given workspace paths registered. */
+  const listOutput = (paths: string[]): string =>
+    [
+      'Services initialized.',
+      '┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓',
+      '┃ Name                ┃ Path                         ┃ Type  ┃',
+      '┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━┩',
+      ...paths.map((p) => `│ repo                │ ${p} │ Project │`),
+      '└─────────────────────┴──────────────────────────────┴───────┘',
+    ].join('\n')
+
+  /** Stand-in API client: canned probe outcomes, call recording. */
+  class FakeApiClient {
+    calls: string[] = []
+    constructor(
+      private readonly outcome: ApiRegistryProbe['outcome'],
+      private readonly code = 'OK',
+    ) {}
+    probe(cwd: string): Promise<ApiRegistryProbe> {
+      this.calls.push(cwd)
+      return Promise.resolve({
+        outcome: this.outcome,
+        code: this.code,
+        message: `fake api probe for ${cwd} (${this.outcome})`,
+        spawned: this.outcome !== 'failed',
+        port: 8_000,
+      })
+    }
+  }
+
+  function makeClassifierWithApi(mock: MockRunner, api: FakeApiClient): LifecycleClassifier {
+    const detector = new WorkspaceDetector({ runner: mock as unknown as CgcRunner })
+    return new LifecycleClassifier({
+      detector,
+      runner: mock as unknown as CgcRunner,
+      apiRegistry: api,
+    })
+  }
+
+  it('api up + path found → clean with the registry (cypher) decider; no cgc list spawn', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      const api = new FakeApiClient('found')
+      const classifier = makeClassifierWithApi(mock, api)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('clean')
+      expect(result.indexed).toBe(true)
+      expect(result.reason).toContain('registry (cypher)')
+      // The API answered; the CLI fallback never ran (liveness + stats only).
+      expect(mock.calls.some((c) => c.args[0] === 'list')).toBe(false)
+      expect(mock.calls.some((c) => c.args[0] === 'stats')).toBe(true)
+      expect(api.calls).toEqual([workspace])
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('api up + path absent → unindexed with the registry (cypher) decider', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      const api = new FakeApiClient('absent')
+      const classifier = makeClassifierWithApi(mock, api)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('unindexed')
+      expect(result.reason).toContain('registry (cypher)')
+      // No work-triggering state and no cgc list spawn.
+      expect(mock.calls.some((c) => c.args[0] === 'list')).toBe(false)
+      expect(mock.calls.some((c) => c.args[0] === 'stats')).toBe(false)
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('api failed → the cgc list fallback decides (registry (cgc list) decider)', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      mock.registryResults.push(makeResult({ stdout: listOutput([workspace]), argv: ['list'] }))
+      const api = new FakeApiClient('failed', 'SPAWN_BUDGET_EXCEEDED')
+      const classifier = makeClassifierWithApi(mock, api)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('clean')
+      expect(result.reason).toContain('registry (cgc list)')
+      expect(result.reason).toContain('registry override')
+      expect(mock.calls.some((c) => c.args[0] === 'list')).toBe(true)
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('api failed + a BUSY cgc list fallback → busy, never corrupt or drift', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      mock.registryResults.push(
+        makeResult({
+          ok: false,
+          code: 'BUSY',
+          stdout: '',
+          stderr: 'Could not set lock on file',
+          argv: ['list'],
+        }),
+      )
+      const api = new FakeApiClient('failed', 'SPAWN_BUDGET_EXCEEDED')
+      const classifier = makeClassifierWithApi(mock, api)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('busy')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('api probe is cached per workspace; a later classification never re-probes', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const mock = new MockRunner()
+      mock.registryResults.push(makeResult({ stdout: listOutput([workspace]), argv: ['list'] }))
+      const api = new FakeApiClient('failed', 'SPAWN_BUDGET_EXCEEDED')
+      const classifier = makeClassifierWithApi(mock, api)
+
+      await classifier.classify(workspace)
+      await classifier.classify(workspace)
+      expect(api.calls).toEqual([workspace])
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
+  it('the marker-present path never consults the API client (cheap path preserved)', async () => {
+    const workspace = makeWorkspace()
+    try {
+      seedIndex(workspace)
+      const mock = new MockRunner()
+      // The client records nothing and would fail the test if probed.
+      const api = new FakeApiClient('found')
+      const classifier = makeClassifierWithApi(mock, api)
+
+      const result = await classifier.classify(workspace)
+      expect(result.state).toBe('clean')
+      expect(result.reason).not.toContain('registry')
+      expect(api.calls).toHaveLength(0)
+      expect(mock.calls.some((c) => c.args[0] === 'list')).toBe(false)
     } finally {
       cleanupWorkspace(workspace)
     }

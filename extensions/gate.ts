@@ -45,6 +45,7 @@
 // invocation budget, retry ledger) never leaks across sessions. Registration
 // is fail-open: a throwing API never breaks extension load.
 
+import type { ApiRegistryClient } from './api-registry'
 import { SessionInvocationBudget } from './budget'
 import { type BusyNotice, BusyPath } from './busy'
 import {
@@ -168,6 +169,13 @@ export interface LifecycleGateOptions {
    * still called on session reset). Production code never passes this.
    */
   classifier?: GateClassifierLike
+  /**
+   * The CGC HTTP API registry client (add-cgc-api-registry-probe). When
+   * supplied, each per-session classifier's marker-absent path probes the
+   * API first and falls back to `cgc list`; when omitted (disabled config
+   * or a failed construction) the CLI fallback decides alone.
+   */
+  apiRegistry?: ApiRegistryClient | undefined
 }
 
 /**
@@ -252,6 +260,7 @@ export class LifecycleGate {
   private readonly api: GateExtensionApi | undefined
   private readonly externalNotify: GateNoticeSink | undefined
   private readonly classifierOverride: GateClassifierLike | undefined
+  private readonly apiRegistry: ApiRegistryClient | undefined
 
   private session: GateSession | undefined
   private registered = false
@@ -263,6 +272,7 @@ export class LifecycleGate {
     this.api = options.api
     this.externalNotify = options.notify
     this.classifierOverride = options.classifier
+    this.apiRegistry = options.apiRegistry
   }
 
   /**
@@ -1059,6 +1069,7 @@ export class LifecycleGate {
           detector,
           runner: this.runner,
           healthProbeTimeoutMs: this.config.cgc.timeoutMs,
+          apiRegistry: this.apiRegistry,
         }),
       store,
       unindexed: new UnindexedPath({

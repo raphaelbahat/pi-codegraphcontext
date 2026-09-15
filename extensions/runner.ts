@@ -238,10 +238,18 @@ class HeadTailBuffer {
 }
 
 /**
- * Terminate a child: SIGTERM first, SIGKILL after the grace period.
- * Returns false when the child had already exited.
+ * The minimal process surface the runner's tracking and termination paths
+ * touch. Real `ChildProcess` objects satisfy it structurally (and so does
+ * any test stand-in), so nothing needs a cast to be tracked or terminated.
  */
-function terminate(child: ChildProcess): boolean {
+export interface TrackedChild {
+  readonly exitCode: number | null
+  readonly signalCode: NodeJS.Signals | null
+  kill(signal?: NodeJS.Signals | number): boolean
+  once(event: string, listener: (code: number | null, signal: NodeJS.Signals | null) => void): void
+}
+
+function terminate(child: TrackedChild): boolean {
   if (child.exitCode !== null || child.signalCode !== null) return false
   child.kill('SIGTERM')
   const enforce = setTimeout(() => {
@@ -255,7 +263,7 @@ function terminate(child: ChildProcess): boolean {
 }
 
 interface LiveChild {
-  child: ChildProcess
+  child: TrackedChild
   /** Resolves once the child has closed (successfully or after termination). */
   closed: Promise<void>
   /** Marks the owning run as cancelled (teardown paths do the actual kill). */
@@ -452,6 +460,36 @@ export class CgcRunner {
   }
 
   /**
+   * Track a long-lived child process spawned OUTSIDE the runner's `run`
+   * pipeline — today the on-demand `cgc api start` server of the registry-
+   * backed indexedness probe (add-cgc-api-registry-probe, design D4). The
+   * runner does not own the child (it never spawns, waits for, or reads it);
+   * ownership stays with the caller, who terminates it when done. Tracking
+   * only makes the EXISTING teardown guarantee apply: every cleanup path —
+   * the graceful `session_shutdown` sweep (`killAll`), the synchronous
+   * `process` `exit` sweep, and signal interception
+   * (`terminateAllSync`) — signals tracked children together with the
+   * runner's own command children, so no externally spawned cgc process
+   * outlives the session. The entry self-removes when the child closes.
+   * Idempotent-safe: an already-exited child is not tracked.
+   */
+  trackExternalChild(child: TrackedChild): void {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    const entry: LiveChild = {
+      child,
+      closed: new Promise<void>((resolveClosed) => {
+        child.once('close', () => {
+          this.liveChildren.delete(entry)
+          resolveClosed()
+        })
+      }),
+      // No owning run promise to mark cancelled; the caller owns the child.
+      markCancelled: () => {},
+    }
+    this.liveChildren.add(entry)
+  }
+
+  /**
    * Terminate every in-flight cgc child (graceful session teardown path).
    * Sends SIGTERM first (SIGKILL after the grace period) and resolves once all
    * children have closed; the pending `run` promises settle as CANCELLED.
@@ -630,8 +668,11 @@ export class CgcRunner {
           if (stdinStream !== null) {
             try {
               stdinStream.write(stdinText)
-              // The declared Writable type omits close(); the runtime exposes it.
-              ;(stdinStream as unknown as { close: () => void }).close()
+              // End our side of the prompt pipe right after writing: `end()`
+              // flushes the queued text and signals EOF (the declared Writable
+              // API — no cast), which is exactly what an answer-then-close
+              // prompt needs.
+              stdinStream.end()
             } catch {
               // The child may close its stdin early (e.g. it rejected the verb
               // without prompting); the close handler below reports the real

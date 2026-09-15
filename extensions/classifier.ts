@@ -29,6 +29,7 @@
 // captured into the reported state (as `unavailable` — the canonical
 // "do nothing, proceed" state) with the error in the reason.
 
+import type { ApiRegistryClient, ApiRegistryProbe } from './api-registry'
 import type { CgcRunner } from './runner'
 import type { CgcProbeResult, WorkspaceDetector } from './workspace'
 
@@ -107,6 +108,15 @@ export interface LifecycleClassifierOptions {
    * FalkorDB setups. Overridable for tests.
    */
   registryArgs?: readonly string[]
+  /**
+   * The CGC HTTP API registry client (add-cgc-api-registry-probe). When
+   * supplied, the marker-absent path probes it FIRST (health → Cypher point
+   * lookup → repositories fallback → bounded on-demand spawn) and only falls
+   * through to the `cgc list` CLI probe on a `failed` outcome. Absent
+   * (disabled config or a construction failure) → the CLI fallback alone,
+   * byte-identical to the merged registry-backed-indexedness fix.
+   */
+  apiRegistry?: Pick<ApiRegistryClient, 'probe'> | undefined
 }
 
 /**
@@ -166,8 +176,17 @@ export class LifecycleClassifier {
   private readonly healthProbeTimeoutMs: number
   private readonly healthArgs: readonly string[]
   private readonly registryArgs: readonly string[]
+  /** The optional CGC HTTP API client (marker-absent path, API first). */
+  private readonly apiRegistry: Pick<ApiRegistryClient, 'probe'> | undefined
   /** Per-session health-probe cache, keyed by workspace cwd. */
   private readonly healthCache = new Map<string, Promise<HealthProbeResult>>()
+  /**
+   * Per-session API-registry cache, keyed by workspace cwd: the spawn phase
+   * is the expensive step, so its outcome (including `failed` → CLI
+   * fallback) is decided once per workspace per classifier lifetime — the
+   * same per-session shape as the health cache.
+   */
+  private readonly apiProbeCache = new Map<string, Promise<ApiRegistryProbe>>()
 
   constructor(options: LifecycleClassifierOptions) {
     this.detector = options.detector
@@ -175,6 +194,7 @@ export class LifecycleClassifier {
     this.healthProbeTimeoutMs = options.healthProbeTimeoutMs ?? 30_000
     this.healthArgs = options.healthArgs ?? ['stats']
     this.registryArgs = options.registryArgs ?? ['list']
+    this.apiRegistry = options.apiRegistry
   }
 
   /**
@@ -215,6 +235,43 @@ export class LifecycleClassifier {
     // indexedness record, the same check `cgc watch` uses for its
     // "Already indexed" verdict) before declaring the workspace unindexed.
     if (!indexed) {
+      // 2a. CGC HTTP API path (add-cgc-api-registry-probe): health → Cypher
+      // point lookup → repositories fallback → bounded on-demand spawn. A
+      // `failed` outcome falls through to the unchanged CLI probe below.
+      const api = this.apiRegistry === undefined ? null : await this.apiProbe(cwd)
+      if (api !== null) {
+        if (api.outcome === 'found') {
+          // Registry override, API-decided: the workspace IS indexed on
+          // this backend; the health probe decides clean/drift/corrupt
+          // exactly as for the marker-present path.
+          const health = await this.healthProbe(cwd)
+          return this.fromHealthProbe(
+            cwd,
+            true,
+            probe,
+            health,
+            `registry (cypher): the CGC API records ${cwd} as indexed despite the missing ${'.codegraphcontext/'} directory`,
+          )
+        }
+        if (api.outcome === 'absent') {
+          return {
+            cwd,
+            state: 'unindexed',
+            indexed,
+            probe,
+            health: null,
+            reason: `no ${'.codegraphcontext/'} directory in ${cwd} and the CGC repository registry (cypher) does not list it`,
+            at: Date.now(),
+          }
+        }
+        // api.outcome === 'failed': the API path is inconclusive — the CLI
+        // fallback below owns the doctrine mapping (BUSY / corrupt-adjacent).
+      }
+
+      // 2b. CLI fallback: the merged registry-backed-indexedness fix,
+      // unchanged. `cgc list` — the authoritative per-workspace indexedness
+      // record, the same check `cgc watch` uses for its "Already indexed"
+      // verdict.
       const registry = await this.registryProbe(cwd)
       if (registry.outcome === 'found') {
         // Registry override: the workspace IS indexed on this backend; the
@@ -226,7 +283,7 @@ export class LifecycleClassifier {
           true,
           probe,
           health,
-          `registry override: cgc list records ${cwd} as indexed despite the missing ${'.codegraphcontext/'} directory`,
+          `registry override via registry (cgc list): cgc list records ${cwd} as indexed despite the missing ${'.codegraphcontext/'} directory`,
         )
       }
       if (registry.outcome === 'failed') {
@@ -407,9 +464,43 @@ export class LifecycleClassifier {
     }
   }
 
-  /** Clear the per-session health-probe cache (session shutdown / fresh session). */
+  /**
+   * Cached CGC HTTP API registry probe (per workspace, per classifier
+   * lifetime). The spawn phase inside the client is the expensive step, so
+   * its outcome is decided once per session like the health probe.
+   */
+  private apiProbe(cwd: string): Promise<ApiRegistryProbe> {
+    const cached = this.apiProbeCache.get(cwd)
+    if (cached) return cached
+
+    const client = this.apiRegistry
+    if (client === undefined) {
+      return Promise.resolve({
+        outcome: 'failed',
+        code: 'DISABLED',
+        message: 'the CGC API registry client is not configured',
+        spawned: false,
+        port: null,
+      })
+    }
+    const promise = client.probe(cwd).catch((error: unknown) => ({
+      outcome: 'failed' as const,
+      code: 'COMMAND_FAILED',
+      message: `cgc api registry probe failed unexpectedly: ${errorMessage(error)}`,
+      spawned: false,
+      port: null,
+    }))
+    this.apiProbeCache.set(cwd, promise)
+    return promise
+  }
+
+  /**
+   * Clear the per-session health-probe and API-registry caches (session
+   * shutdown / fresh session).
+   */
   reset(): void {
     this.healthCache.clear()
+    this.apiProbeCache.clear()
   }
 
   private unavailable(cwd: string, indexed: boolean, message: string): LifecycleClassification {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.4.0...v0.4.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* the in-workflow npm publish checks out the release tag, not the triggering SHA (the trigger SHA predates the Release PR's version bump — it tried to publish 0.3.2 while v0.4.0 was the release); shellcheck-clean tag resolution ([70b5e3b](https://github.com/raphaelbahat/pi-codegraphcontext/commit/70b5e3b13f666e766fc6ec61e8a4951765d50765))
+
 ## [0.4.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.3.2...v0.4.0) (2026-09-15)
 
 

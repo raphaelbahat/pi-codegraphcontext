@@ -442,17 +442,17 @@ export class GuidanceInjector {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.4: opt-in routing-skill exposure (design D2, spec "Opt-in routing
-// skill"). The deep routing skill ships inside the package's `skills/` tree,
-// but it is offered to the agent ONLY when the opt-in flag is set AND guidance
-// is ready. Exposure is a `resources_discover` contribution evaluated at
+// Task 2.4: routing-skill exposure (design D2, spec "Opt-out routing skill").
+// The deep routing skill ships inside the package's `skills/` tree, and it is
+// offered to the agent when the flag is enabled (default on) AND guidance is
+// ready. Exposure is a `resources_discover` contribution evaluated at
 // discovery time, so a readiness transition later in the same session is never
 // applied retroactively to that session's discovery.
 //
-// The package manifest lists the `skills/` tree but force-excludes the opt-in
-// skill by default (`"!skills/cgc-routing/**"` in package.json), because pi's
-// resource loader loads manifest resources unconditionally. The exclusion keeps
-// a default install from offering the skill; this module's discovery handler is
+// The package manifest lists the `skills/` tree but force-excludes the skill
+// (`"!skills/cgc-routing/**"` in package.json), because pi's resource loader
+// loads manifest resources unconditionally. The exclusion keeps a static load
+// from bypassing the readiness gating; this module's discovery handler is
 // therefore the only runtime exposure path.
 // ---------------------------------------------------------------------------
 
@@ -485,9 +485,9 @@ export interface GuidanceSkillDiscoverApi {
 /** Options for {@link GuidanceSkillExposure}. */
 export interface GuidanceSkillExposureOptions {
   /**
-   * The opt-in flag (`guidance.routingSkill`). When false the skill is never
-   * contributed, whatever the readiness outcome — a default installation does
-   * not offer it (spec "Skill disabled by default").
+   * The routing-skill flag (`guidance.routingSkill`, default true). When
+   * explicitly opted out (false) the skill is never contributed, whatever the
+   * readiness outcome (spec "Skill opted out").
    */
   enabled: boolean
   /**
@@ -505,8 +505,9 @@ export interface GuidanceSkillExposureOptions {
 }
 
 /**
- * Opt-in routing-skill exposure (task 2.4). Registers a `resources_discover`
- * handler that returns `{ skillPaths }` ONLY when the opt-in flag is set AND the
+ * Routing-skill exposure (task 2.4). Registers a `resources_discover`
+ * handler that returns `{ skillPaths }` ONLY when the flag is enabled (the
+ * default) AND the
  * readiness predicate holds for the discovered workspace; otherwise it returns
  * undefined and contributes nothing. Discovery is evaluated per event
  * (`startup` / `reload`) — a readiness transition later in a session is NOT

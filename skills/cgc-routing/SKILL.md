@@ -8,9 +8,9 @@ description: >-
   CGC indexing, sync, and diagnostic operations.
 ---
 
-# CGC routing skill (opt-in)
+# CGC routing skill (opt-out)
 
-Scope: **CodeGraphContext v0.6.x**. This skill is the deep, opt-in companion to
+Scope: **CodeGraphContext v0.6.x**. This skill is the deep, default-on companion (opt-out) to
 the always-on guideline card; when the two overlap, the card is the compact
 statement and this skill is the detail. The content is advisory — it never
 blocks or restricts any tool. Graph query tools are registered by the CGC MCP
@@ -145,7 +145,7 @@ overrides. Relevant keys and their defaults:
 | `freshness.autoSync` | `true` | `CGC_FRESHNESS_AUTO_SYNC` |
 | `tools.cliGap.enabled` | `true` | `CGC_TOOLS_CLI_GAP_ENABLED` |
 
-This skill is opt-in via `guidance.routingSkill`; the always-on guideline card
+This skill is on by default; opt out with `guidance.routingSkill: false`; the always-on guideline card
 has no off switch of its own — disabling the extension is the only way to
 remove it.
 

@@ -3,7 +3,7 @@
 Scope: **CodeGraphContext v0.6.x**. This guide is written against the CGC
 surfaces this extension wraps; a different CGC major/minor may rename verbs or
 change defaults. It is the deep, always-current companion to the always-on
-routing guideline card and the opt-in `cgc-routing` skill, which link here for
+routing guideline card and the `cgc-routing` skill (on by default), which link here for
 depth rather than repeating it.
 
 The guide is organized **intent-first**: start from the question you are trying
@@ -221,7 +221,7 @@ warning and fall back to the lower layer.
 | `output.redactSecrets` | `true` | `CGC_OUTPUT_REDACT_SECRETS` | Redact secret-looking values from rendered output. |
 | `output.gcf` | `false` | `CGC_OUTPUT_GCF` | Opt-in: request GCF compact output. |
 | `tools.cliGap.enabled` | `true` | `CGC_TOOLS_CLI_GAP_ENABLED` | Register the three CLI-gap tools as one set. |
-| `guidance.routingSkill` | `false` | `CGC_GUIDANCE_ROUTING_SKILL` | Opt-in: install the deep `cgc-routing` skill. |
+| `guidance.routingSkill` | `true` | `CGC_GUIDANCE_ROUTING_SKILL` | On by default; set `false` to remove the deep `cgc-routing` skill. |
 
 The always-on routing guideline card has no off switch of its own; disabling
 the extension is the only way to remove it. This guide is the card's deep-dive

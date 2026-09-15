@@ -226,7 +226,7 @@ export const DEFAULT_CONFIG: ExtensionConfig = {
     },
   },
   guidance: {
-    routingSkill: false,
+    routingSkill: true,
   },
 }
 

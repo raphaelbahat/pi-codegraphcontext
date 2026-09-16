@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.6.1...v0.7.0) (2026-09-16)
+
+
+### Features
+
+* /cgc config — the in-session settings modal (add-cgc-settings-modal) ([4c88121](https://github.com/raphaelbahat/pi-codegraphcontext/commit/4c881210a6d46b7085d9fc46c6bb9176d95c925e))
+
 ## [0.6.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.6.0...v0.6.1) (2026-09-16)
 
 

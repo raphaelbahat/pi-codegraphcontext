@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -7,8 +15,19 @@ import {
   type ConfigKey,
   DEFAULT_CONFIG,
   loadConfig,
+  loadConfigWithFileWinners,
+  mergeConfigEdits,
   parseBoolean,
+  resolveGlobalConfigPath,
   resolvePiAgentDir,
+  resolveProjectConfigPath,
+  validateBooleanValue,
+  validateExecutableValue,
+  validateMaxBytesValue,
+  validateMaxSyncsPerSessionValue,
+  validatePortValue,
+  validateTimeoutMsValue,
+  validateWorktreeModeValue,
 } from './config'
 
 const ENV_KEYS = Object.keys(CONFIG_ENV_VARS) as ConfigKey[]
@@ -1143,6 +1162,240 @@ describe('PI_CODING_AGENT_DIR-aware global config resolution', () => {
       expect(result.sources['lifecycle.autoCreate']).toBe('config-file')
     } finally {
       rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('shared validation rules (add-cgc-settings-modal task 1.1)', () => {
+  it('every rule text equals the exact parenthetical the load-time warning carries', () => {
+    const rules: Array<[string, { ok: boolean; error?: string }]> = [
+      ['boolean', validateBooleanValue('maybe')],
+      ['worktree', validateWorktreeModeValue('sandbox')],
+      ['port', validatePortValue('70000')],
+      ['timeout', validateTimeoutMsValue('0')],
+      ['bytes', validateMaxBytesValue('1.5')],
+      ['syncs', validateMaxSyncsPerSessionValue('0')],
+      ['executable', validateExecutableValue('  ')],
+    ]
+    for (const rule of rules) {
+      expect(rule[1].ok, rule[0]).toBe(false)
+      if (rule[1].ok) continue
+      expect(rule[1].error, rule[0]).toMatch(/^expected /)
+    }
+    // The exact messages, composed into the loader's skip-with-warning shape.
+    expect(validateBooleanValue('maybe')).toEqual({
+      ok: false,
+      error: 'expected 1/true/yes/on or 0/false/no/off',
+    })
+    expect(validateWorktreeModeValue('sandbox')).toEqual({
+      ok: false,
+      error: 'expected "off" or "isolate"',
+    })
+    expect(validatePortValue('70000')).toEqual({
+      ok: false,
+      error: 'expected a TCP port between 1 and 65535',
+    })
+    expect(validatePortValue(80_000)).toEqual({
+      ok: false,
+      error: 'expected a TCP port between 1 and 65535',
+    })
+    expect(validateTimeoutMsValue('0')).toEqual({
+      ok: false,
+      error: 'expected a positive number of milliseconds',
+    })
+    expect(validateMaxBytesValue('1.5')).toEqual({
+      ok: false,
+      error: 'expected a positive whole number of bytes',
+    })
+    expect(validateMaxSyncsPerSessionValue('0')).toEqual({
+      ok: false,
+      error: 'expected a positive whole number of syncs',
+    })
+    expect(validateExecutableValue('  ')).toEqual({
+      ok: false,
+      error: 'expected a non-empty string',
+    })
+  })
+
+  it('accepts the exact values the loader accepts', () => {
+    expect(validateBooleanValue(true)).toEqual({ ok: true, value: true })
+    expect(validateBooleanValue('ON')).toEqual({ ok: true, value: true })
+    expect(validateWorktreeModeValue('isolate')).toEqual({ ok: true, value: 'isolate' })
+    expect(validatePortValue('9000')).toEqual({ ok: true, value: 9_000 })
+    expect(validateTimeoutMsValue(45_000)).toEqual({ ok: true, value: 45_000 })
+    expect(validateMaxBytesValue('32768')).toEqual({ ok: true, value: 32_768 })
+    expect(validateMaxSyncsPerSessionValue(5)).toEqual({ ok: true, value: 5 })
+    expect(validateExecutableValue(' /usr/bin/cgc ')).toEqual({ ok: true, value: '/usr/bin/cgc' })
+  })
+})
+
+describe('mergeConfigEdits (add-cgc-settings-modal task 1.2: never-clobber, atomic)', () => {
+  function makeTempDir(): string {
+    return mkdtempSync(join(tmpdir(), 'cgc-merge-test-'))
+  }
+
+  it('applies only the edited nested keys and preserves unknown content verbatim', () => {
+    const dir = makeTempDir()
+    try {
+      const target = resolveProjectConfigPath(dir)
+      mkdirSync(join(dir, '.pi'), { recursive: true })
+      writeFileSync(
+        target,
+        JSON.stringify({
+          customSection: { keep: [1, 2] },
+          lifecycle: { autoCreate: false, note: 'stay' },
+        }),
+      )
+
+      const result = mergeConfigEdits(target, [{ key: 'lifecycle.autoCreate', value: true }])
+
+      expect(result.ok).toBe(true)
+      const written = JSON.parse(readFileSync(target, 'utf8')) as Record<string, unknown>
+      expect(written['customSection']).toEqual({ keep: [1, 2] })
+      expect(written['lifecycle']).toEqual({ autoCreate: true, note: 'stay' })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses unreadable, invalid-JSON, and non-object targets with nothing written', () => {
+    const dir = makeTempDir()
+    try {
+      mkdirSync(join(dir, '.pi'), { recursive: true })
+      const target = resolveProjectConfigPath(dir)
+
+      const missing = mergeConfigEdits(target, [{ key: 'lifecycle.autoCreate', value: true }])
+      expect(missing.ok).toBe(false)
+      expect(!missing.ok && missing.refusal).toBe('missing')
+
+      writeFileSync(target, '{ not json')
+      const invalid = mergeConfigEdits(target, [{ key: 'lifecycle.autoCreate', value: true }])
+      expect(invalid.ok).toBe(false)
+      expect(!invalid.ok && invalid.refusal).toBe('invalid-json')
+      expect(readFileSync(target, 'utf8')).toBe('{ not json')
+
+      writeFileSync(target, '[1, 2]')
+      const notObject = mergeConfigEdits(target, [{ key: 'lifecycle.autoCreate', value: true }])
+      expect(notObject.ok).toBe(false)
+      expect(!notObject.ok && notObject.refusal).toBe('not-object')
+      expect(readFileSync(target, 'utf8')).toBe('[1, 2]')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a touched section that is not an object — the file stays byte-identical (all-or-nothing)', () => {
+    const dir = makeTempDir()
+    try {
+      mkdirSync(join(dir, '.pi'), { recursive: true })
+      const target = resolveProjectConfigPath(dir)
+      const content = JSON.stringify({ lifecycle: 'scalar', custom: { a: 1 } })
+      writeFileSync(target, content)
+
+      const result = mergeConfigEdits(target, [{ key: 'lifecycle.autoCreate', value: true }])
+
+      expect(result.ok).toBe(false)
+      expect(!result.ok && result.refusal).toBe('section-not-object')
+      expect(readFileSync(target, 'utf8')).toBe(content)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses invalid dotted keys before any mutation', () => {
+    const dir = makeTempDir()
+    try {
+      const target = resolveProjectConfigPath(dir)
+      mkdirSync(join(dir, '.pi'), { recursive: true })
+      writeFileSync(target, '{}')
+
+      const bad = mergeConfigEdits(target, [{ key: 'cgc', value: 1 }])
+      expect(bad.ok).toBe(false)
+      expect(!bad.ok && bad.refusal).toBe('invalid-edit')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('creates the three-level cgc.api.port path and cleans up its temp file (atomic rename)', () => {
+    const dir = makeTempDir()
+    try {
+      const target = resolveProjectConfigPath(dir)
+
+      const result = mergeConfigEdits(target, [{ key: 'cgc.api.port', value: 9_000 }], {
+        createIfMissing: true,
+      })
+
+      expect(result.ok).toBe(true)
+      const written = JSON.parse(readFileSync(target, 'utf8')) as {
+        cgc?: { api?: { port?: number } }
+      }
+      expect(written.cgc?.api?.port).toBe(9_000)
+      expect((statSync(target).mode & 0o777) === 0o600).toBe(true)
+      expect((statSync(join(dir, '.pi')).mode & 0o777) === 0o700).toBe(true)
+      expect(readdirSync(join(dir, '.pi')).filter((name) => name.endsWith('.tmp'))).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('lands global writes at the PI_CODING_AGENT_DIR-resolved path via resolveGlobalConfigPath', () => {
+    expect(resolveProjectConfigPath('/ws')).toBe('/ws/.pi/cgc.json')
+    expect(resolveGlobalConfigPath('/home/u', { PI_CODING_AGENT_DIR: '/custom' })).toBe(
+      '/custom/cgc.json',
+    )
+    expect(resolveGlobalConfigPath('/home/u', {})).toBe('/home/u/.pi/agent/cgc.json')
+  })
+})
+
+describe('loadConfigWithFileWinners (add-cgc-settings-modal task 1.3: which file won)', () => {
+  it('attributes file-sourced keys to the winning layer: project beats global', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cgc-cfg-win-home-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'cgc-cfg-win-proj-'))
+    try {
+      mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+      writeFileSync(
+        join(home, '.pi', 'agent', 'cgc.json'),
+        JSON.stringify({ lifecycle: { autoCreate: true }, output: { maxBytes: 4096 } }),
+      )
+      mkdirSync(join(cwd, '.pi'), { recursive: true })
+      writeFileSync(
+        join(cwd, '.pi', 'cgc.json'),
+        JSON.stringify({ lifecycle: { autoCreate: false } }),
+      )
+
+      const result = loadConfigWithFileWinners({ env: cleanEnv(), cwd, homeDir: home })
+
+      expect(result.sources['lifecycle.autoCreate']).toBe('config-file')
+      expect(result.fileWinners['lifecycle.autoCreate']).toBe('project')
+      expect(result.fileWinners['output.maxBytes']).toBe('global')
+      expect(result.fileWinners['cgc.executable']).toBeUndefined()
+      // loadConfig itself is unchanged in shape.
+      const plain = loadConfig({ env: cleanEnv(), cwd, homeDir: home })
+      expect(plain.config).toEqual(result.config)
+      expect('fileWinners' in plain).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  })
+
+  it('env overrides keep the env source and stay out of the file attribution', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'cgc-cfg-win-env-'))
+    try {
+      mkdirSync(join(cwd, '.pi'), { recursive: true })
+      writeFileSync(join(cwd, '.pi', 'cgc.json'), JSON.stringify({ output: { maxBytes: 4096 } }))
+
+      const result = loadConfigWithFileWinners({
+        env: cleanEnv(envWith({ 'output.maxBytes': '2048' })),
+        cwd,
+        homeDir: '/nonexistent',
+      })
+
+      expect(result.sources['output.maxBytes']).toBe('env')
+      expect(result.fileWinners['output.maxBytes']).toBeUndefined()
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
     }
   })
 })

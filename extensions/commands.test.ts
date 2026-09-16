@@ -321,8 +321,8 @@ function makeIndexedWorkspace(): string {
 // ---------------------------------------------------------------------------
 
 describe('CGC_SUBCOMMANDS (the registered command list)', () => {
-  it('is exactly the five documented commands, in usage order', () => {
-    expect(VERBS).toEqual(['status', 'index', 'sync', 'doctor', 'report'])
+  it('is exactly the six documented commands, in usage order (config: add-cgc-settings-modal)', () => {
+    expect(VERBS).toEqual(['status', 'index', 'sync', 'doctor', 'report', 'config'])
   })
 
   it('never exposes CGC deletion/cleanup verbs (ADR 0003)', () => {

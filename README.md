@@ -96,6 +96,7 @@ All commands live under `/cgc`:
 | `/cgc rebuild` | Drop and rebuild the index                                     |
 | `/cgc report`  | Write the CGC quality report to a confirmed path               |
 | `/cgc doctor`  | Bounded diagnostic render (connection, parser, backend health) |
+| `/cgc config`  | In-session settings modal (TUI); read-only table elsewhere     |
 
 ### Automatic Behavior
 
@@ -135,6 +136,33 @@ Configuration is resolved in this order (each layer overrides the previous one):
 
 Only keys present in a config file are applied; invalid values are skipped with a warning
 and fall back to the lower layer.
+
+### In-Session Settings (`/cgc config`)
+
+`/cgc config` opens a settings modal inside a TUI session (outside the TUI it renders a
+read-only key/value/source table instead):
+
+- Every config key is shown with its **effective value and source** — built-in default,
+  config file (project or global), or environment override.
+- Environment-overridden keys are **read-only**, naming the winning variable: editing a
+  file cannot beat the env layer, so the modal does not offer an edit it cannot make
+  effective.
+- Editable keys validate with the exact rules the config loader applies (booleans;
+  `worktree.mode` ∈ `off`/`isolate`; timeouts as positive milliseconds; the TCP port as
+  an integer 1–65535; byte budgets and sync counts as positive whole numbers; the
+  executable as a non-empty string). Invalid input is rejected inside the modal and never
+  reaches disk.
+- A write-target selector chooses where staged edits land: the project `.pi/cgc.json`
+  (default) or the global agent-directory `cgc.json` (PI_CODING_AGENT_DIR-aware). Saves
+  merge only the edited nested keys into the chosen file — unknown sections and keys are
+  preserved verbatim, a malformed target file is refused untouched, and writes are atomic
+  (temp file + rename).
+- Saved changes **apply at the next session start** — the running session keeps its loaded
+  behavior; the modal and the completion notice say so explicitly.
+
+The modal degrades fail-open: overlay `ctx.ui.custom` → non-overlay `ctx.ui.custom` → the
+documented dialog flow → the read-only table; every UI or filesystem failure is a bounded
+notice, never a crashed or blocked session.
 
 ### Full Configuration Reference
 
@@ -239,9 +267,8 @@ export CGC_ALLOWED_ROOTS="$PWD"
 
 ```sh
 bun install
-bun test          # 869 tests across 31 files
+bun test          # ~935 tests across 32 files
 bunx tsc --noEmit # type check
 ```
-
 The extension is fully covered by the per-capability specs under
 `openspec/specs/` and the archived change history under `openspec/changes/archive/`.

@@ -9,8 +9,8 @@
 //
 // A registered name containing a space can therefore never be invoked, and
 // registering the same name repeatedly makes pi assign `:1`-style numeric
-// invocation suffixes (`/review:1`, `/review:2`). The five user-facing
-// commands — `/cgc status|index|sync|doctor|report` — are consequently reached
+// invocation suffixes (`/review:1`, `/review:2`). The user-facing
+// commands — `/cgc status|index|sync|doctor|report|config` — are consequently reached
 // through ONE `pi.registerCommand("cgc", …)` whose handler dispatches on the
 // first argument token. Handlers receive everything after the command name as
 // `args`; that is exactly the shape the documented API describes
@@ -40,6 +40,7 @@ import type { LifecycleConfig } from './config'
 import { DEFAULT_SYNC_ARGS } from './drift'
 import type { LifecycleActionInput, LifecycleSnapshot } from './lifecycle-state'
 import type { CgcCommandResult, CgcRunner } from './runner'
+import { openCgcSettings } from './settings-modal'
 import { isWorkspaceIndexed } from './workspace'
 import type { WorktreeIsolationBlock } from './worktree'
 import { buildWorktreeIdentityMismatchNotice } from './worktree'
@@ -47,8 +48,8 @@ import { buildWorktreeIdentityMismatchNotice } from './worktree'
 /** The registered pi command name — invoked as `/cgc …`. */
 export const CGC_COMMAND_NAME = 'cgc'
 
-/** One of the five human-facing `/cgc` subcommands. */
-export type CgcSubcommandVerb = 'status' | 'index' | 'sync' | 'doctor' | 'report'
+/** One of the six human-facing `/cgc` subcommands. */
+export type CgcSubcommandVerb = 'status' | 'index' | 'sync' | 'doctor' | 'report' | 'config'
 
 export interface CgcSubcommandSpec {
   /** The verb typed after `/cgc` (e.g. `status` for `/cgc status`). */
@@ -58,7 +59,7 @@ export interface CgcSubcommandSpec {
 }
 
 /**
- * The five registered subcommands, in usage order. This closed list is the
+ * The six registered subcommands, in usage order. This closed list is the
  * command surface: no `clean`/`delete`/`rm` verb may ever be added here
  * (ADR 0003 — deletion-gated CGC verbs are never exposed).
  */
@@ -83,6 +84,10 @@ export const CGC_SUBCOMMANDS: readonly CgcSubcommandSpec[] = Object.freeze([
     verb: 'report',
     description:
       'Write the CGC quality report to the confirmed destination (confirmation required)',
+  },
+  {
+    verb: 'config',
+    description: 'Open the settings modal (TUI) or render the read-only effective configuration',
   },
 ])
 
@@ -1555,6 +1560,25 @@ const VERB_HANDLERS: Record<CgcSubcommandVerb, VerbHandler> = {
   report: async (ctx, rest, deps) => {
     await handleReportCommand(ctx, rest, deps)
   },
+  // add-cgc-settings-modal: `/cgc config` — the settings modal in the TUI,
+  // the read-only effective-config table elsewhere (degradation chain D1).
+  config: async (ctx) => {
+    await handleConfigCommand(ctx)
+  },
+}
+
+/**
+ * Run the settings surface (add-cgc-settings-modal D5): fully fail-open —
+ * every UI or filesystem failure inside {@link openCgcSettings} degrades to a
+ * bounded notice; this guard is the last line so a handler defect can never
+ * crash or block the session.
+ */
+async function handleConfigCommand(ctx: ExtensionCommandContext): Promise<void> {
+  try {
+    await openCgcSettings(ctx)
+  } catch {
+    // Fail-open: the settings command must never crash or block the session.
+  }
 }
 
 /** Split an invocation's argument string into the first-token verb and the rest. */
@@ -1639,14 +1663,15 @@ export async function handleCgcInvocation(
  * the optional dependency surface (task 1.2) into the dispatch handlers.
  *
  * One registration, bare name `cgc` — so pi resolves `/cgc …` without any
- * `:1` suffix — whose handler dispatches to the five subcommands. Fail-open:
+ * `:1` suffix — whose handler dispatches to the six subcommands. Fail-open:
  * a throwing registration API must never break extension load (the extension
  * degrades to no commands, exactly like the gate).
  */
 export function registerCgcCommands(pi: ExtensionAPI, deps: CgcCommandDependencies = {}): void {
   try {
     pi.registerCommand(CGC_COMMAND_NAME, {
-      description: 'CodeGraphContext workspace commands (status, index, sync, doctor, report)',
+      description:
+        'CodeGraphContext workspace commands (status, index, sync, doctor, report, config)',
       getArgumentCompletions: (prefix) => {
         const items = CGC_SUBCOMMANDS.map((spec) => ({
           value: spec.verb,

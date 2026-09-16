@@ -11,9 +11,9 @@
 // Loading is fail-open: unreadable or invalid layers are skipped and recorded
 // as warnings; `loadConfig` never throws.
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 export interface ApiConfig {
   /**
@@ -296,19 +296,45 @@ export function parseWorktreeMode(raw: string): WorktreeMode | undefined {
   return undefined
 }
 
-function parseTimeoutMs(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
-  const value = typeof raw === 'string' ? Number(raw) : raw
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    warnings.push(
-      `${key}: ignoring invalid timeout ${JSON.stringify(raw)} (expected a positive number of milliseconds)`,
-    )
-    return undefined
-  }
-  return value
+// ---------------------------------------------------------------------------
+// Shared validation rules (add-cgc-settings-modal task 1.1).
+//
+// One validation vocabulary for the loader and the settings modal: every rule
+// here is exactly the rule the load-time parser enforces, and `error` is the
+// exact parenthetical hint the loader's warning carries — so a modal rejection
+// and a loader skip-with-warning read the same way. Pure: no warnings array,
+// no side effects; the loader composes its own message shapes around these.
+// ---------------------------------------------------------------------------
+
+/** Discriminated validation result shared by the loader and the settings modal. */
+export type ValueRule<T> = { ok: true; value: T } | { ok: false; error: string }
+
+/** Boolean rule: booleans pass through; strings go through parseBoolean. */
+export function validateBooleanValue(raw: unknown): ValueRule<boolean> {
+  const parsed =
+    typeof raw === 'boolean' ? raw : typeof raw === 'string' ? parseBoolean(raw) : undefined
+  if (parsed === undefined) return { ok: false, error: 'expected 1/true/yes/on or 0/false/no/off' }
+  return { ok: true, value: parsed }
 }
 
-/** Parse a TCP port (whole number 1–65535) shared by env and file layers. */
-function parsePort(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
+/** Worktree-mode rule: "off" or "isolate" (case-insensitive like the loader). */
+export function validateWorktreeModeValue(raw: unknown): ValueRule<WorktreeMode> {
+  const parsed = typeof raw === 'string' ? parseWorktreeMode(raw) : undefined
+  if (parsed === undefined) return { ok: false, error: 'expected "off" or "isolate"' }
+  return { ok: true, value: parsed }
+}
+
+/** Timeout rule: a finite positive number of milliseconds (strings accepted). */
+export function validateTimeoutMsValue(raw: unknown): ValueRule<number> {
+  const value = typeof raw === 'string' ? Number(raw) : raw
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return { ok: false, error: 'expected a positive number of milliseconds' }
+  }
+  return { ok: true, value }
+}
+
+/** TCP-port rule: an integer between 1 and 65535 (strings accepted). */
+export function validatePortValue(raw: unknown): ValueRule<number> {
   const value = typeof raw === 'string' ? Number(raw) : raw
   if (
     typeof value !== 'number' ||
@@ -317,16 +343,13 @@ function parsePort(raw: unknown, key: ConfigKey, warnings: string[]): number | u
     value < 1 ||
     value > 65_535
   ) {
-    warnings.push(
-      `${key}: ignoring invalid ${JSON.stringify(raw)} (expected a TCP port between 1 and 65535)`,
-    )
-    return undefined
+    return { ok: false, error: 'expected a TCP port between 1 and 65535' }
   }
-  return value
+  return { ok: true, value }
 }
 
-/** Parse a byte budget (positive whole number) shared by env and file layers. */
-function parseMaxBytes(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
+/** Byte-budget rule: a positive whole number of bytes (strings accepted). */
+export function validateMaxBytesValue(raw: unknown): ValueRule<number> {
   const value = typeof raw === 'string' ? Number(raw) : raw
   if (
     typeof value !== 'number' ||
@@ -334,12 +357,60 @@ function parseMaxBytes(raw: unknown, key: ConfigKey, warnings: string[]): number
     !Number.isInteger(value) ||
     value <= 0
   ) {
-    warnings.push(
-      `${key}: ignoring invalid ${JSON.stringify(raw)} (expected a positive whole number of bytes)`,
-    )
+    return { ok: false, error: 'expected a positive whole number of bytes' }
+  }
+  return { ok: true, value }
+}
+
+/** Per-session count rule: a positive integer (strings accepted). */
+export function validateMaxSyncsPerSessionValue(raw: unknown): ValueRule<number> {
+  const value = typeof raw === 'string' ? Number(raw) : raw
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value <= 0
+  ) {
+    return { ok: false, error: 'expected a positive whole number of syncs' }
+  }
+  return { ok: true, value }
+}
+
+/** Executable rule: a non-empty string; the trimmed value is the result. */
+export function validateExecutableValue(raw: unknown): ValueRule<string> {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return { ok: false, error: 'expected a non-empty string' }
+  }
+  return { ok: true, value: raw.trim() }
+}
+
+function parseTimeoutMs(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
+  const result = validateTimeoutMsValue(raw)
+  if (!result.ok) {
+    warnings.push(`${key}: ignoring invalid timeout ${JSON.stringify(raw)} (${result.error})`)
     return undefined
   }
-  return value
+  return result.value
+}
+
+/** Parse a TCP port (whole number 1–65535) shared by env and file layers. */
+function parsePort(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
+  const result = validatePortValue(raw)
+  if (!result.ok) {
+    warnings.push(`${key}: ignoring invalid ${JSON.stringify(raw)} (${result.error})`)
+    return undefined
+  }
+  return result.value
+}
+
+/** Parse a byte budget (positive whole number) shared by env and file layers. */
+function parseMaxBytes(raw: unknown, key: ConfigKey, warnings: string[]): number | undefined {
+  const result = validateMaxBytesValue(raw)
+  if (!result.ok) {
+    warnings.push(`${key}: ignoring invalid ${JSON.stringify(raw)} (${result.error})`)
+    return undefined
+  }
+  return result.value
 }
 
 /** Parse a per-session count (positive integer) shared by env and file layers. */
@@ -348,19 +419,12 @@ function parseMaxSyncsPerSession(
   key: ConfigKey,
   warnings: string[],
 ): number | undefined {
-  const value = typeof raw === 'string' ? Number(raw) : raw
-  if (
-    typeof value !== 'number' ||
-    !Number.isFinite(value) ||
-    !Number.isInteger(value) ||
-    value <= 0
-  ) {
-    warnings.push(
-      `${key}: ignoring invalid ${JSON.stringify(raw)} (expected a positive whole number of syncs)`,
-    )
+  const result = validateMaxSyncsPerSessionValue(raw)
+  if (!result.ok) {
+    warnings.push(`${key}: ignoring invalid ${JSON.stringify(raw)} (${result.error})`)
     return undefined
   }
-  return value
+  return result.value
 }
 
 /**
@@ -514,13 +578,19 @@ function readConfigFile(
   return values
 }
 
-/** Apply one file layer's values onto the accumulating config. */
+/**
+ * Apply one file layer's values onto the accumulating config. `winner` (the
+ * layer's file attribution, D5 of add-cgc-settings-modal) is recorded for
+ * every key this layer validly applies — the last layer to set a key wins.
+ */
 function applyFileLayer(
   values: Partial<Record<ConfigKey, unknown>>,
   label: string,
   config: ExtensionConfig,
   sources: Record<ConfigKey, ConfigSource>,
   warnings: string[],
+  winner?: 'global' | 'project',
+  fileWinners?: Partial<Record<ConfigKey, 'global' | 'project'>>,
 ): void {
   for (const key of CONFIG_KEYS) {
     if (!(key in values)) continue
@@ -528,8 +598,9 @@ function applyFileLayer(
 
     switch (key) {
       case 'cgc.executable': {
-        if (typeof raw === 'string' && raw.trim().length > 0) {
-          config.cgc.executable = raw.trim()
+        const executable = validateExecutableValue(raw)
+        if (executable.ok) {
+          config.cgc.executable = executable.value
           sources[key] = 'config-file'
         } else {
           warnings.push(`${label}: ignoring invalid cgc.executable value ${JSON.stringify(raw)}`)
@@ -695,6 +766,9 @@ function applyFileLayer(
         break
       }
     }
+    if (winner !== undefined && fileWinners !== undefined && sources[key] === 'config-file') {
+      fileWinners[key] = winner
+    }
   }
 }
 
@@ -814,10 +888,6 @@ function applyEnvLayer(
 }
 
 /**
- * Resolve the effective extension configuration. Never throws; problems are
- * recorded in `warnings` and the affected value falls back to a lower layer.
- */
-/**
  * Resolve Pi's agent directory (the global config home): the
  * `PI_CODING_AGENT_DIR` environment variable when set (a leading `~` expands
  * against `homeDir`), else `<homeDir>/.pi/agent` — the same resolution pi
@@ -837,12 +907,18 @@ export function resolvePiAgentDir(
   return join(homeDir, '.pi', 'agent')
 }
 
-export function loadConfig(options: LoadConfigOptions = {}): ConfigResult {
+function loadConfigWithFileWinnersInternal(options: LoadConfigOptions): {
+  config: ExtensionConfig
+  warnings: string[]
+  sources: Record<ConfigKey, ConfigSource>
+  fileWinners: Partial<Record<ConfigKey, 'global' | 'project'>>
+} {
   const warnings: string[] = []
   const sources = Object.fromEntries(
     CONFIG_KEYS.map((key) => [key, 'default' as ConfigSource]),
   ) as Record<ConfigKey, ConfigSource>
   const config: ExtensionConfig = structuredClone(DEFAULT_CONFIG)
+  const fileWinners: Partial<Record<ConfigKey, 'global' | 'project'>> = {}
 
   const homeDir = options.homeDir ?? homedir()
   const cwd = options.cwd ?? process.cwd()
@@ -851,17 +927,217 @@ export function loadConfig(options: LoadConfigOptions = {}): ConfigResult {
   // global file lives in Pi's agent directory — PI_CODING_AGENT_DIR overrides
   // the default ~/.pi/agent (tilde-expanded), matching pi's own resolution.
   const globalFile = readConfigFile(
-    join(resolvePiAgentDir(homeDir, options.env), 'cgc.json'),
+    resolveGlobalConfigPath(homeDir, options.env),
     'config',
     warnings,
   )
-  applyFileLayer(globalFile, 'config', config, sources, warnings)
-  const projectFile = readConfigFile(join(cwd, '.pi', 'cgc.json'), 'config', warnings)
-  applyFileLayer(projectFile, 'config', config, sources, warnings)
+  applyFileLayer(globalFile, 'config', config, sources, warnings, 'global', fileWinners)
+  const projectFile = readConfigFile(resolveProjectConfigPath(cwd), 'config', warnings)
+  applyFileLayer(projectFile, 'config', config, sources, warnings, 'project', fileWinners)
 
   // Layer 3: environment-variable overrides (highest precedence).
   const env = options.env ?? process.env
   applyEnvLayer(env, config, sources, warnings)
 
+  // Attribution only for keys whose FINAL source is 'config-file': an
+  // env-superseded key is no longer file-sourced at all (D5).
+  for (const key of CONFIG_KEYS) {
+    if (sources[key] !== 'config-file') delete fileWinners[key]
+  }
+
+  return { config, warnings, sources, fileWinners }
+}
+
+/**
+ * Resolve the effective extension configuration. Never throws; problems are
+ * recorded in `warnings` and the affected value falls back to a lower layer.
+ */
+export function loadConfig(options: LoadConfigOptions = {}): ConfigResult {
+  const { config, warnings, sources } = loadConfigWithFileWinnersInternal(options)
   return { config, warnings, sources }
+}
+
+/**
+ * `loadConfig` plus the file-layer attribution the settings modal needs (D5 of
+ * add-cgc-settings-modal): for every key whose effective source is
+ * `config-file`, which file last set it — `project` or `global` (project wins
+ * on conflict, matching the layering). Behavior of the resolved values is
+ * identical to `loadConfig`.
+ */
+export interface ConfigResultWithFileWinners extends ConfigResult {
+  fileWinners: Partial<Record<ConfigKey, 'global' | 'project'>>
+}
+
+export function loadConfigWithFileWinners(
+  options: LoadConfigOptions = {},
+): ConfigResultWithFileWinners {
+  return loadConfigWithFileWinnersInternal(options)
+}
+
+// ---------------------------------------------------------------------------
+// Never-clobber atomic merge writer (add-cgc-settings-modal task 1.2).
+//
+// The write-direction twin of the warn-and-skip read discipline above: only the
+// edited nested keys are applied, every other section/key/ordering is preserved
+// verbatim, and any refusal leaves the target file byte-identical. Writes are
+// atomic (temp file + rename). This is the ONLY path the settings modal uses to
+// touch a config file.
+// ---------------------------------------------------------------------------
+
+/** Which config file a settings save writes to (design D2 of add-cgc-settings-modal). */
+export type ConfigFileTarget = 'project' | 'global'
+
+/** The project config file path (`<cwd>/.pi/cgc.json`). */
+export function resolveProjectConfigPath(cwd: string): string {
+  return join(cwd, '.pi', 'cgc.json')
+}
+
+/**
+ * The global config file path (`<agent-dir>/cgc.json`), via the shipped
+ * `resolvePiAgentDir` (PI_CODING_AGENT_DIR-aware).
+ */
+export function resolveGlobalConfigPath(
+  homeDir: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return join(resolvePiAgentDir(homeDir, env), 'cgc.json')
+}
+
+/** Typed refusals of {@link mergeConfigEdits}; every one leaves the file unmodified. */
+export type MergeWriteRefusal =
+  | 'missing'
+  | 'unreadable'
+  | 'invalid-json'
+  | 'not-object'
+  | 'section-not-object'
+  | 'invalid-edit'
+  | 'write-failed'
+
+export type MergeWriteResult =
+  | { ok: true; path: string; writtenKeys: readonly string[] }
+  | { ok: false; refusal: MergeWriteRefusal; message: string }
+
+/** One dotted config key (e.g. `cgc.api.port`) and its validated value. */
+export interface MergeEdit {
+  key: string
+  value: unknown
+}
+
+/**
+ * Merge `edits` into the JSON object at `targetPath` without clobbering
+ * anything else: unknown sections/keys survive verbatim, a touched section
+ * that is not a plain object refuses the whole save, and the write is atomic
+ * (temp file + rename; dir `0o700` when created, file `0o600`). Never throws —
+ * every failure is a typed refusal.
+ */
+export function mergeConfigEdits(
+  targetPath: string,
+  edits: readonly MergeEdit[],
+  options: { createIfMissing?: boolean } = {},
+): MergeWriteResult {
+  try {
+    let root: Record<string, unknown>
+    if (!existsSync(targetPath)) {
+      if (options.createIfMissing !== true) {
+        return {
+          ok: false,
+          refusal: 'missing',
+          message: `refusing to write ${targetPath}: the file does not exist (nothing was written)`,
+        }
+      }
+      root = {}
+    } else {
+      let text: string
+      try {
+        text = readFileSync(targetPath, 'utf8')
+      } catch (error) {
+        return {
+          ok: false,
+          refusal: 'unreadable',
+          message: `refusing to write ${targetPath}: the file is unreadable (${String(error)}); nothing was written`,
+        }
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text) as unknown
+      } catch (error) {
+        return {
+          ok: false,
+          refusal: 'invalid-json',
+          message: `refusing to write ${targetPath}: invalid JSON (${String(error)}); nothing was written`,
+        }
+      }
+      if (!isPlainObject(parsed)) {
+        return {
+          ok: false,
+          refusal: 'not-object',
+          message: `refusing to write ${targetPath}: expected a JSON object; nothing was written`,
+        }
+      }
+      root = structuredClone(parsed) as Record<string, unknown>
+    }
+
+    // Validate every edit path BEFORE mutating anything — all-or-nothing.
+    for (const edit of edits) {
+      const parts = edit.key.split('.')
+      if (parts.length < 2 || parts.some((part) => part.length === 0)) {
+        return {
+          ok: false,
+          refusal: 'invalid-edit',
+          message: `refusing to write ${targetPath}: invalid config key ${JSON.stringify(edit.key)}; nothing was written`,
+        }
+      }
+      let cursor: Record<string, unknown> = root
+      for (const section of parts.slice(0, -1)) {
+        const child = cursor[section]
+        if (child !== undefined && !isPlainObject(child)) {
+          return {
+            ok: false,
+            refusal: 'section-not-object',
+            message: `refusing to write ${targetPath}: the "${section}" section is not an object; nothing was written`,
+          }
+        }
+        cursor = child === undefined ? {} : (child as Record<string, unknown>)
+      }
+    }
+
+    // Apply — every path is validated above, so section objects are created
+    // only where they are missing.
+    for (const edit of edits) {
+      const parts = edit.key.split('.')
+      let cursor: Record<string, unknown> = root
+      for (const section of parts.slice(0, -1)) {
+        if (!isPlainObject(cursor[section])) cursor[section] = {}
+        cursor = cursor[section] as Record<string, unknown>
+      }
+      cursor[parts[parts.length - 1] as string] = edit.value
+    }
+
+    const text = `${JSON.stringify(root, null, 2)}\n`
+    const dir = dirname(targetPath)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const temp = join(dir, `.${basename(targetPath)}.${process.pid}.${Date.now()}.tmp`)
+    try {
+      writeFileSync(temp, text, { mode: 0o600 })
+      renameSync(temp, targetPath)
+    } catch (error) {
+      try {
+        unlinkSync(temp)
+      } catch {
+        // Best-effort cleanup; the target file is untouched either way.
+      }
+      return {
+        ok: false,
+        refusal: 'write-failed',
+        message: `failed to write ${targetPath} (${String(error)}); nothing was changed`,
+      }
+    }
+    return { ok: true, path: targetPath, writtenKeys: edits.map((edit) => edit.key) }
+  } catch (error) {
+    return {
+      ok: false,
+      refusal: 'write-failed',
+      message: `failed to write ${targetPath} (${String(error)}); nothing was changed`,
+    }
+  }
 }

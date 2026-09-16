@@ -57,6 +57,13 @@ built-in tools.
   action, and any running work.
 - `/cgc sync` — triggers the incremental `cgc index .` reconcile for the
   active workspace (non-destructive; no confirmation).
+- `/cgc config` — opens the in-session settings modal in a TUI session (the
+  read-only effective key/value/source table elsewhere): displays every
+  config key with its effective value and source, edits file-layer-writable
+  keys into the project `.pi/cgc.json` or the global agent-directory
+  `cgc.json` with a never-clobber atomic merge, and states plainly that
+  changes apply at the next session start (environment-overridden keys are
+  shown read-only with the winning variable name).
 
 ### Management goes to the CLI-gap tools
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.7.0...v0.7.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* remove the npm publish from release-please.yml — npm's Trusted Publisher is bound to release-publish.yml, so the same publish here 404s (v0.5.0/v0.6.0/v0.7.0), fails the run, and suppresses the workflow_run publish (chicken-and-egg); release-publish.yml (workflow_run + release + dispatch) owns npm publishing ([fa69079](https://github.com/raphaelbahat/pi-codegraphcontext/commit/fa690796cf86fb80ad6929c720fc971d2ec94627))
+
 ## [0.7.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.6.1...v0.7.0) (2026-09-16)
 
 

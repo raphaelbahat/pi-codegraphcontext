@@ -279,6 +279,11 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
         isInFlight: (cwd: string) => cachedRunner?.isInFlight(cwd) ?? false,
       },
       runner: cachedRunner,
+      // feat/status-index-info: the API registry client for the status view's
+      // passive indexedness answer — the same probe seam the gate and the
+      // classifier receive (undefined when the API is disabled or construction
+      // failed → the status's `cgc list` fallback then decides, then unknown).
+      apiRegistry: cachedApiRegistry,
       lifecycle: getConfig().config.lifecycle,
       // Task 1.3 (add-cgc-freshness-drift-sync): the read-only freshness view
       // for the status renderer — the shared store's snapshot, structurally

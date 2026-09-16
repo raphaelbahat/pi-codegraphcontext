@@ -33,7 +33,9 @@
 
 import { join } from 'node:path'
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent'
+import type { ApiRegistryClient } from './api-registry'
 import { buildBusyNotice } from './busy'
+import { workspaceListedInRegistryOutput } from './classifier'
 import type { LifecycleConfig } from './config'
 import { DEFAULT_SYNC_ARGS } from './drift'
 import type { LifecycleActionInput, LifecycleSnapshot } from './lifecycle-state'
@@ -144,6 +146,15 @@ export interface CgcCommandDependencies {
    */
   freshness?: (cwd: string) => CgcFreshnessSummary | null
   /**
+   * feat/status-index-info: the CGC HTTP API registry client for the status
+   * view's passive indexedness answer — the same probe seam the classifier
+   * and the gate receive (health → Cypher point lookup → repositories
+   * fallback → bounded on-demand spawn). Absent (the API is disabled or the
+   * client construction failed) → the status falls back to the bounded
+   * `cgc list` CLI probe and then renders `unknown` (fail-open).
+   */
+  apiRegistry?: Pick<ApiRegistryClient, 'probe'> | undefined
+  /**
    * The shared cgc runner (tasks 2.2+): background spawn with per-workspace
    * dedup for the action verbs. Absent (runner construction failed) → the
    * spawning verbs report cgc as unavailable and run nothing (fail-open).
@@ -197,6 +208,13 @@ export interface CgcStatusView {
   workInFlight: boolean
   /** Read-only freshness summary when the capability is present; null otherwise. */
   freshness: CgcFreshnessSummary | null
+  /**
+   * feat/status-index-info: the passive indexedness answer with its deciding
+   * source (see {@link resolveStatusIndexLine} for the chain and the
+   * passive-probe trade-off). Optional for view-construction compatibility:
+   * undefined renders as `unknown (probe unavailable)`.
+   */
+  index?: CgcStatusIndexLine | null
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +294,140 @@ export function buildStatusView(cwd: string, deps: CgcCommandDependencies = {}):
   return { cwd, snapshot, workInFlight, freshness }
 }
 
+// ---------------------------------------------------------------------------
+// Status indexedness answer (feat/status-index-info)
+// ---------------------------------------------------------------------------
+
+/**
+ * The status view's answer to "is this workspace indexed?" together with the
+ * source that decided it — the same reason-string discipline used across this
+ * repo: the value AND its deciding provenance are always visible.
+ */
+export interface CgcStatusIndexLine {
+  value: 'indexed' | 'likely-indexed' | 'not-indexed' | 'unknown'
+  source: string
+}
+
+/**
+ * Bounded `cgc list` budget for the status view's CLI fallback. The classifier
+ * allows 30s for the same probe; a user-invoked passive view tightens the
+ * budget — an inconclusive registry must degrade to `unknown` quickly and
+ * never hold the command open.
+ */
+const STATUS_INDEX_PROBE_TIMEOUT_MS = 10_000
+
+/**
+ * Resolve the status view's Index line (feat/status-index-info), cheapest
+ * signal first — exactly the classifier's chain:
+ *
+ *   1. the lifecycle snapshot's `indexed` field when recorded (zero probes),
+ *   2. the `.codegraphcontext/` filesystem marker (free; a Kuzu artifact —
+ *      a positive-only signal, so its answer is the hedged "likely"),
+ *   3. the CGC HTTP API point lookup through the shared {@link ApiRegistryClient}
+ *      (reuse — the same client the classifier and the gate use),
+ *   4. the bounded `cgc list` CLI probe through the shared runner.
+ *
+ * Passive-view trade-off (documented, deliberately accepted): the API point
+ * lookup may spawn `cgc api start` on loopback (bounded budgets, children
+ * owned by the runner's teardown sweeps) when no API is already reachable —
+ * the same reuse the session-start gate makes. Every step is strictly
+ * read-only with respect to the graph and the registry: no indexing, sync,
+ * rebuild, or any other maintenance work is ever triggered or scheduled,
+ * and the answer decides nothing by itself — it is display only. This is the
+ * feature's whole point: a useful answer even when the session-start gate
+ * has not evaluated the workspace.
+ *
+ * Fail-open at every step: any failure, timeout, or absent capability
+ * degrades to `unknown (probe unavailable)` — never a throw into pi's
+ * dispatch (the returned promise does not reject).
+ */
+export async function resolveStatusIndexLine(
+  cwd: string,
+  snapshot: LifecycleSnapshot | null,
+  deps: CgcCommandDependencies,
+): Promise<CgcStatusIndexLine> {
+  // 1. The recorded snapshot decides without any probe. A null `indexed`
+  //    (unknown at classification time) falls through to the probes.
+  const snapIndexed = snapshot?.indexed
+  if (typeof snapIndexed === 'boolean') {
+    return { value: snapIndexed ? 'indexed' : 'not-indexed', source: 'snapshot' }
+  }
+
+  // 2. The filesystem marker is free and a POSITIVE-only signal (a Kuzu
+  //    artifact; Neo4j / FalkorDB setups never have it). Present → "likely
+  //    indexed" (the hedged label keeps the artifact caveat visible). Absent
+  //    proves nothing — the registry decides below.
+  try {
+    if (isWorkspaceIndexed(cwd)) {
+      return { value: 'likely-indexed', source: 'filesystem marker' }
+    }
+  } catch {
+    // A broken marker read is not an answer: fall through, fail open.
+  }
+
+  // 3. The CGC HTTP API point lookup. found/absent are authoritative;
+  //    'failed' (or a throw) is inconclusive — the CLI fallback decides,
+  //    exactly like the classifier's chain.
+  const apiRegistry = deps.apiRegistry
+  if (apiRegistry !== undefined) {
+    try {
+      const probe = await apiRegistry.probe(cwd)
+      if (probe.outcome === 'found') {
+        return { value: 'indexed', source: 'registry (cypher)' }
+      }
+      if (probe.outcome === 'absent') {
+        return { value: 'not-indexed', source: 'registry (cypher)' }
+      }
+    } catch {
+      // Fail-open: a throwing probe is an unknown, not an error.
+    }
+  }
+
+  // 4. The CLI fallback: `cgc list` through the shared runner, parsed with
+  //    the classifier's exact cell-boundary doctrine (no prefix
+  //    false-positives). A failed command is inconclusive, not an answer.
+  const runner = deps.runner
+  if (runner !== undefined) {
+    try {
+      const result = await runner.run(cwd, {
+        args: ['list'],
+        timeoutMs: STATUS_INDEX_PROBE_TIMEOUT_MS,
+      })
+      if (result.ok) {
+        const listed = workspaceListedInRegistryOutput(cwd, result.stdout)
+        return {
+          value: listed ? 'indexed' : 'not-indexed',
+          source: 'registry (cgc list)',
+        }
+      }
+    } catch {
+      // Fail-open.
+    }
+  }
+
+  return { value: 'unknown', source: 'probe unavailable' }
+}
+
+/** Human labels for the Index line's values (the reason-string discipline). */
+const INDEX_VALUE_LABELS: Readonly<Record<CgcStatusIndexLine['value'], string>> = Object.freeze({
+  indexed: 'indexed',
+  'likely-indexed': 'likely indexed',
+  'not-indexed': 'not indexed',
+  unknown: 'unknown',
+})
+
+/**
+ * The status view's Index line: the indexedness answer AND the source that
+ * decided it. An unresolved answer (no probe available, or every probe
+ * inconclusive) renders as `unknown (probe unavailable)` — the passive view
+ * never guesses and never triggers work.
+ */
+export function formatIndexLine(index: CgcStatusIndexLine | null | undefined): string {
+  const value = index === null || index === undefined ? 'unknown' : index.value
+  const source = index === null || index === undefined ? 'probe unavailable' : index.source
+  return `Index: ${INDEX_VALUE_LABELS[value]} (${source})`
+}
+
 function formatLastActionLine(snapshot: LifecycleSnapshot | null): string {
   const lastAction = snapshot?.lastAction ?? null
   if (lastAction === null) return 'Last action: none recorded'
@@ -321,6 +473,11 @@ function formatFreshnessLine(freshness: CgcFreshnessSummary): string {
  * Render one status report (task 1.2). Lines:
  *   - header naming the active workspace,
  *   - lifecycle state (with the classification reason when recorded),
+ *   - the Index line (feat/status-index-info): the passive indexedness answer
+ *     with its deciding source — from the snapshot when recorded, else
+ *     through the bounded read-only marker → API point lookup → `cgc list`
+ *     chain ({@link resolveStatusIndexLine}), `unknown (probe unavailable)`
+ *     when nothing can answer,
  *   - the last recorded action (kind, detail, relative time; "none recorded"
  *     when the store has nothing yet),
  *   - running-work progress: the activity label while work runs (indexing /
@@ -332,7 +489,10 @@ function formatFreshnessLine(freshness: CgcFreshnessSummary): string {
  * detail (classifier reasons over already-policed probe streams) is the
  * runner's shared policy output, so this surface applies NO private hygiene —
  * no stripping and no bounding (task 2.1, ADR-0005) — and renders the joined
- * lines directly.
+ * lines directly. The Index line's probes (when the snapshot cannot answer)
+ * are the bounded, read-only, fail-open chain documented on
+ * {@link resolveStatusIndexLine}: display only — no maintenance work is ever
+ * triggered or scheduled by this view.
  */
 export function renderStatusText(view: CgcStatusView): string {
   const lines: string[] = []
@@ -349,6 +509,7 @@ export function renderStatusText(view: CgcStatusView): string {
     lines.push(`Lifecycle: ${lifecycleStateLabel(snapshot.state)}${reason}`)
   }
 
+  lines.push(formatIndexLine(view.index))
   lines.push(formatLastActionLine(snapshot))
   lines.push(formatRunningWorkLine(snapshot, view.workInFlight))
 
@@ -1352,10 +1513,19 @@ async function handleReportCommand(
 
 const VERB_HANDLERS: Record<CgcSubcommandVerb, VerbHandler> = {
   // Task 1.2: the status renderer. Passive by construction (ADR-0004): it
-  // reads lifecycle state and the runner's in-flight map and renders; it
-  // never spawns cgc and performs no maintenance work.
-  status: (ctx, _rest, deps) => {
-    notify(ctx, renderStatusText(buildStatusView(ctx.cwd, deps)), 'info')
+  // reads lifecycle state and the runner's in-flight map and renders. The
+  // Index line (feat/status-index-info) awaits one bounded, read-only,
+  // fail-open probe chain ONLY when the snapshot cannot answer (see
+  // resolveStatusIndexLine for the documented trade-off); it never spawns
+  // maintenance work and never throws into dispatch.
+  status: async (ctx, _rest, deps) => {
+    try {
+      const view = buildStatusView(ctx.cwd, deps)
+      const index = await resolveStatusIndexLine(ctx.cwd, view.snapshot, deps)
+      notify(ctx, renderStatusText({ ...view, index }), 'info')
+    } catch {
+      // Fail-open: the status command must never crash or block the session.
+    }
   },
   // Task 2.2: `/cgc index` — creation honors the change-1 auto-create gate;
   // `--force` runs only behind explicit confirmation; work is spawned through

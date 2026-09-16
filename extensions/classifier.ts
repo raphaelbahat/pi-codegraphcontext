@@ -165,6 +165,23 @@ export function parseHealthProbe(stdout: string, stderr: string): HealthParse {
 }
 
 /**
+ * Line-based registry-list matcher (shared by the classifier's registry probe
+ * and the status view's passive indexedness probe — feat/status-index-info):
+ * the workspace path must appear as its own table cell — a cell boundary
+ * (box-drawing or plain pipe) or end-of-line right after the path. A bare
+ * substring match would false-positive on prefix paths (e.g. /repo and
+ * /repo-old listed in the same registry).
+ */
+export function workspaceListedInRegistryOutput(cwd: string, stdout: string): boolean {
+  return stdout.split('\n').some((line) => {
+    const at = line.indexOf(cwd)
+    if (at === -1) return false
+    const rest = line.slice(at + cwd.length)
+    return /^\s*[│|]/.test(rest) || rest.trim() === ''
+  })
+}
+
+/**
  * Per-session lifecycle classifier. One instance per Pi session: the health
  * probe cache lives exactly as long as the classifier, so repeated gate
  * evaluations never re-spawn the status/stats probe (the per-session
@@ -447,16 +464,9 @@ export class LifecycleClassifier {
         message: `cgc ${this.registryArgs.join(' ')}: ${result.message}`,
       }
     }
-    // Line-based match: the workspace path must appear as its own table cell —
-    // a cell boundary (box-drawing or plain pipe) or end-of-line right after
-    // the path. A bare substring match would false-positive on prefix paths
-    // (e.g. /repo and /repo-old listed in the same registry).
-    const listed = result.stdout.split('\n').some((line) => {
-      const at = line.indexOf(cwd)
-      if (at === -1) return false
-      const rest = line.slice(at + cwd.length)
-      return /^\s*[│|]/.test(rest) || rest.trim() === ''
-    })
+    // Line-based match via the shared matcher (the same cell-boundary
+    // doctrine the status view's passive probe reuses).
+    const listed = workspaceListedInRegistryOutput(cwd, result.stdout)
     return {
       outcome: listed ? 'found' : 'absent',
       code: result.code,

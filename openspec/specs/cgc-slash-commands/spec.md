@@ -7,7 +7,7 @@ Exposes /cgc:* slash commands (status, index, sync, clear and friends) so the us
 
 ### Requirement: Status command
 
-Rule: The extension SHALL provide a `/cgc status` command that reports the active workspace, its lifecycle state, the last action taken, and — when the freshness capability is present — an index freshness summary, without performing any maintenance work.
+Rule: The extension SHALL provide a `/cgc status` command that reports the active workspace, its lifecycle state, an indexed answer for the workspace (the Index line, with the source that decided it), the last action taken, and — when the freshness capability is present — an index freshness summary, without performing any maintenance work.
 
 #### Scenario: Status on a clean workspace
 
@@ -26,6 +26,24 @@ Rule: The extension SHALL provide a `/cgc status` command that reports the activ
 - **GIVEN** the freshness capability is not present in this installation
 - **WHEN** the user runs `/cgc status`
 - **THEN** the output still renders workspace and lifecycle state and simply omits the freshness section
+
+#### Scenario: Status answers indexedness from the recorded snapshot
+
+- **GIVEN** the lifecycle gate has evaluated the workspace and recorded an indexed answer
+- **WHEN** the user runs `/cgc status`
+- **THEN** the Index line answers from the recorded snapshot, labels the source (`snapshot`), and runs no probe
+
+#### Scenario: Status answers indexedness when no snapshot is recorded
+
+- **GIVEN** the session-start gate has not evaluated the workspace (or recorded no indexed answer)
+- **WHEN** the user runs `/cgc status`
+- **THEN** the Index line answers through the cheapest read-only signal chain — the filesystem marker (a positive-only signal, hedged as "likely indexed"), then the CGC HTTP API registry point lookup, then a bounded `cgc list` — and labels the deciding source; no indexing or maintenance work is ever triggered by the view
+
+#### Scenario: The indexed answer fails open
+
+- **GIVEN** every indexedness signal is unavailable, inconclusive, or failing
+- **WHEN** the user runs `/cgc status`
+- **THEN** the Index line renders `unknown (probe unavailable)`, the command raises no error, and no maintenance work is triggered
 
 ### Requirement: Index command consent gates
 

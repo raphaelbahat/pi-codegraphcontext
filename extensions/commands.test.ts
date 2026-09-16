@@ -758,6 +758,166 @@ describe('/cgc status renderer', () => {
 })
 
 // ---------------------------------------------------------------------------
+// /cgc status Index line (feat/status-index-info): the passive indexedness
+// answer with its deciding source. Snapshot first (zero probes); otherwise
+// the bounded read-only marker → API point lookup → `cgc list` chain;
+// fail-open to `unknown` everywhere.
+// ---------------------------------------------------------------------------
+
+describe('/cgc status Index line (feat/status-index-info)', () => {
+  /** A fake ApiRegistryClient probe seam recording its invocations. */
+  function makeApiProbe(outcome: 'found' | 'absent' | 'failed' | 'throwing'): {
+    apiRegistry: CgcCommandDependencies['apiRegistry']
+    calls: () => number
+  } {
+    let calls = 0
+    return {
+      apiRegistry: {
+        probe: async () => {
+          calls++
+          if (outcome === 'throwing') throw new Error('api registry exploded')
+          return { outcome, code: 'OK', message: 'probe', spawned: false, port: 8_000 }
+        },
+      },
+      calls: () => calls,
+    }
+  }
+
+  /** Run the registered /cgc status handler and return the notified text. */
+  async function runStatusHandler(
+    deps: CgcCommandDependencies,
+    cwd: string = '/ws',
+  ): Promise<Notified[]> {
+    const { api, registrations } = makeRecordingApi()
+    registerCgcCommands(api, deps)
+    const { ctx, notified } = makeContext(undefined, cwd)
+    await registrations[0]?.handler('status', ctx)
+    return notified
+  }
+
+  it('renders the Index line with its deciding source, defaulting to unknown', () => {
+    const withIndex = renderStatusText({
+      cwd: '/ws',
+      snapshot: null,
+      workInFlight: false,
+      freshness: null,
+      index: { value: 'indexed', source: 'registry (cypher)' },
+    })
+    expect(withIndex).toContain('Index: indexed (registry (cypher))')
+
+    const withoutIndex = renderStatusText({
+      cwd: '/ws',
+      snapshot: null,
+      workInFlight: false,
+      freshness: null,
+    })
+    expect(withoutIndex).toContain('Index: unknown (probe unavailable)')
+  })
+
+  it('answers from the snapshot and runs zero probes when an indexed answer is recorded', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const probe = makeApiProbe('found')
+    const { state } = makeStateSurface({ snapshot: () => makeSnapshot({ indexed: false }) })
+
+    const notified = await runStatusHandler({ state, runner, apiRegistry: probe.apiRegistry })
+
+    expect(notified[0]?.message).toContain('Index: not indexed (snapshot)')
+    expect(probe.calls()).toBe(0)
+    expect(runs).toHaveLength(0)
+  })
+
+  it('probes the registry when the snapshot records no indexed answer (API found)', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const probe = makeApiProbe('found')
+    const { state } = makeStateSurface({ snapshot: () => makeSnapshot({ indexed: null }) })
+
+    const notified = await runStatusHandler({ state, runner, apiRegistry: probe.apiRegistry })
+
+    expect(notified[0]?.message).toContain('Index: indexed (registry (cypher))')
+    expect(probe.calls()).toBe(1)
+    expect(runs).toHaveLength(0)
+  })
+
+  it('reports not-indexed when the registry does not list the workspace', async () => {
+    const probe = makeApiProbe('absent')
+    const { state } = makeStateSurface({ snapshot: () => null })
+
+    const notified = await runStatusHandler({ state, apiRegistry: probe.apiRegistry })
+
+    expect(notified[0]?.message).toContain('Index: not indexed (registry (cypher))')
+  })
+
+  it('falls back to the bounded cgc list probe when the API registry is inconclusive (listed)', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const probe = makeApiProbe('failed')
+    const { state } = makeStateSurface({ snapshot: () => null })
+    const deps: CgcCommandDependencies = { state, runner, apiRegistry: probe.apiRegistry }
+
+    const { api, registrations } = makeRecordingApi()
+    registerCgcCommands(api, deps)
+    const { ctx, notified } = makeContext()
+    const pending = registrations[0]?.handler('status', ctx)
+    // Let the API probe settle and the CLI fallback start before resolving it.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.args).toEqual(['list'])
+    // Cell-boundary match: /ws listed, /ws-old NOT matching by prefix.
+    runs[0]?.settle(makeResult({ stdout: '│ /other │\n│ /ws │\n' }))
+    await pending
+
+    expect(notified[0]?.message).toContain('Index: indexed (registry (cgc list))')
+  })
+
+  it('reports not-indexed when the cgc list fallback does not list the workspace', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const probe = makeApiProbe('failed')
+    const { state } = makeStateSurface({ snapshot: () => null })
+    const deps: CgcCommandDependencies = { state, runner, apiRegistry: probe.apiRegistry }
+
+    const { api, registrations } = makeRecordingApi()
+    registerCgcCommands(api, deps)
+    const { ctx, notified } = makeContext()
+    const pending = registrations[0]?.handler('status', ctx)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    runs[0]?.settle(makeResult({ stdout: '│ /other │\n│ /ws-old │\n' }))
+    await pending
+
+    expect(notified[0]?.message).toContain('Index: not indexed (registry (cgc list))')
+  })
+
+  it('answers likely-indexed from the filesystem marker when no snapshot is recorded', async () => {
+    const dir = makeIndexedWorkspace()
+    try {
+      const { state } = makeStateSurface({ snapshot: () => null })
+
+      const notified = await runStatusHandler({ state }, dir)
+
+      expect(notified[0]?.message).toContain('Index: likely indexed (filesystem marker)')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('fails open to unknown when the probes fail and no CLI fallback is wired', async () => {
+    const probe = makeApiProbe('throwing')
+    const { state } = makeStateSurface({ snapshot: () => null })
+
+    const notified = await runStatusHandler({ state, apiRegistry: probe.apiRegistry })
+
+    expect(notified[0]?.message).toContain('Index: unknown (probe unavailable)')
+    expect(notified[0]?.type).toBe('info')
+  })
+
+  it('renders unknown when nothing is wired (the un-wired fail-open path)', async () => {
+    const { ctx, notified } = makeContext()
+
+    await handleCgcInvocation('status', ctx)
+
+    expect(notified[0]?.message).toContain('Index: unknown (probe unavailable)')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Shared output-hygiene renderer (task 1.3)
 // ---------------------------------------------------------------------------
 

@@ -38,6 +38,8 @@ import {
   type SettingItem,
   SettingsList,
   Text,
+  truncateToWidth,
+  visibleWidth,
 } from '@earendil-works/pi-tui'
 import {
   CONFIG_ENV_VARS,
@@ -432,6 +434,49 @@ const SAVE_TARGET_ITEM_ID = '__cgc_save_target'
 /** ctrl+s — the explicit save key inside the modal (ESC closes without saving). */
 const SAVE_KEY = '\u0013'
 
+/**
+ * Rounded box-drawing border characters, mirroring the spences10/my-pi
+ * `/context` modal framing (packages/pi-tui-modal frame.ts `rounded` style).
+ */
+const MODAL_BORDER = {
+  topLeft: '╭',
+  top: '─',
+  topRight: '╮',
+  left: '│',
+  right: '│',
+  bottomLeft: '╰',
+  bottom: '─',
+  bottomRight: '╯',
+} as const
+
+/**
+ * Draw `content` inside a rounded border in the accent color (the /context
+ * reference framing): inner content is rendered at width − 2, truncated and
+ * padded to that inner width, then flanked by the left/right border columns.
+ */
+function renderFramedModal(
+  content: { render(width: number): string[] },
+  width: number,
+  theme: ModalTheme,
+): string[] {
+  const color = (text: string) => theme.fg('accent', text)
+  const innerWidth = Math.max(1, width - 2)
+  const horizontal = MODAL_BORDER.top.repeat(Math.max(0, width - 2))
+  return [
+    color(`${MODAL_BORDER.topLeft}${horizontal}${MODAL_BORDER.topRight}`),
+    ...content.render(innerWidth).map((line) => {
+      const padded = padToWidth(truncateToWidth(line, innerWidth, '', true), innerWidth)
+      return `${color(MODAL_BORDER.left)}${padded}${color(MODAL_BORDER.right)}`
+    }),
+    color(`${MODAL_BORDER.bottomLeft}${horizontal}${MODAL_BORDER.bottomRight}`),
+  ]
+}
+
+/** Pad one already-truncated line out to exactly `width` visible columns. */
+function padToWidth(line: string, width: number): string {
+  return line + ' '.repeat(Math.max(0, width - visibleWidth(line)))
+}
+
 export interface SettingsModalOutcome {
   kind: 'save' | 'cancel'
   edits: StagedEdit[]
@@ -605,9 +650,15 @@ export function buildSettingsModalComponent(params: {
   )
   container.addChild(help)
 
+  // The framed modal body (the /context reference framing): the content is
+  // padded by a pi-tui Box(2, 1) — 2 columns left/right, 1 row top/bottom —
+  // then drawn inside a rounded box-drawing border in the accent color.
+  const framed = new Box(2, 1)
+  framed.addChild(container)
+
   return {
-    render: (width: number) => container.render(width),
-    invalidate: () => container.invalidate(),
+    render: (width: number) => renderFramedModal(framed, width, params.theme),
+    invalidate: () => framed.invalidate(),
     handleInput: (data: string) => {
       if (data === SAVE_KEY) {
         params.onClose({

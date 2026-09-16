@@ -795,7 +795,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
     return notified
   }
 
-  it('renders the Index line with its deciding source, defaulting to unknown', () => {
+  it('renders the Index line as the status value only (no fetch-method suffix)', () => {
     const withIndex = renderStatusText({
       cwd: '/ws',
       snapshot: null,
@@ -803,7 +803,9 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
       freshness: null,
       index: { value: 'indexed', source: 'registry (cypher)' },
     })
-    expect(withIndex).toContain('Index: indexed (registry (cypher))')
+    expect(withIndex).toContain('Index: indexed')
+    // The deciding source stays available internally but is never rendered.
+    expect(withIndex).not.toContain('registry')
 
     const withoutIndex = renderStatusText({
       cwd: '/ws',
@@ -811,7 +813,8 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
       workInFlight: false,
       freshness: null,
     })
-    expect(withoutIndex).toContain('Index: unknown (probe unavailable)')
+    expect(withoutIndex).toContain('Index: unknown')
+    expect(withoutIndex).not.toContain('probe unavailable')
   })
 
   it('answers from the snapshot and runs zero probes when an indexed answer is recorded', async () => {
@@ -821,7 +824,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
 
     const notified = await runStatusHandler({ state, runner, apiRegistry: probe.apiRegistry })
 
-    expect(notified[0]?.message).toContain('Index: not indexed (snapshot)')
+    expect(notified[0]?.message).toContain('Index: not indexed')
     expect(probe.calls()).toBe(0)
     expect(runs).toHaveLength(0)
   })
@@ -833,7 +836,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
 
     const notified = await runStatusHandler({ state, runner, apiRegistry: probe.apiRegistry })
 
-    expect(notified[0]?.message).toContain('Index: indexed (registry (cypher))')
+    expect(notified[0]?.message).toContain('Index: indexed')
     expect(probe.calls()).toBe(1)
     expect(runs).toHaveLength(0)
   })
@@ -844,7 +847,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
 
     const notified = await runStatusHandler({ state, apiRegistry: probe.apiRegistry })
 
-    expect(notified[0]?.message).toContain('Index: not indexed (registry (cypher))')
+    expect(notified[0]?.message).toContain('Index: not indexed')
   })
 
   it('falls back to the bounded cgc list probe when the API registry is inconclusive (listed)', async () => {
@@ -865,7 +868,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
     runs[0]?.settle(makeResult({ stdout: '│ /other │\n│ /ws │\n' }))
     await pending
 
-    expect(notified[0]?.message).toContain('Index: indexed (registry (cgc list))')
+    expect(notified[0]?.message).toContain('Index: indexed')
   })
 
   it('reports not-indexed when the cgc list fallback does not list the workspace', async () => {
@@ -882,7 +885,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
     runs[0]?.settle(makeResult({ stdout: '│ /other │\n│ /ws-old │\n' }))
     await pending
 
-    expect(notified[0]?.message).toContain('Index: not indexed (registry (cgc list))')
+    expect(notified[0]?.message).toContain('Index: not indexed')
   })
 
   it('answers likely-indexed from the filesystem marker when no snapshot is recorded', async () => {
@@ -892,7 +895,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
 
       const notified = await runStatusHandler({ state }, dir)
 
-      expect(notified[0]?.message).toContain('Index: likely indexed (filesystem marker)')
+      expect(notified[0]?.message).toContain('Index: likely indexed')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -904,7 +907,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
 
     const notified = await runStatusHandler({ state, apiRegistry: probe.apiRegistry })
 
-    expect(notified[0]?.message).toContain('Index: unknown (probe unavailable)')
+    expect(notified[0]?.message).toContain('Index: unknown')
     expect(notified[0]?.type).toBe('info')
   })
 
@@ -913,7 +916,7 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
 
     await handleCgcInvocation('status', ctx)
 
-    expect(notified[0]?.message).toContain('Index: unknown (probe unavailable)')
+    expect(notified[0]?.message).toContain('Index: unknown')
   })
 })
 

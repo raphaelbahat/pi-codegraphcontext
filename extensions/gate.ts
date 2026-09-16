@@ -96,11 +96,13 @@ export type GateNoticeSink = (text: string, type: GateNoticeType) => void
  * test seam: the real `ExtensionAPI` satisfies it — same pattern as
  * cleanup.ts).
  */
+export type GateHookHandler = (event: unknown, ctx: unknown) => void
+
 export interface GateExtensionApi {
   // Registration returns nothing the caller uses (pi's `on` return is ignored);
   // `void` names that contract instead of an opaque unknown.
-  on(event: 'session_start', handler: (event: unknown, ctx: unknown) => void): void
-  on(event: 'session_shutdown', handler: (event: unknown, ctx: unknown) => void): void
+  on(event: 'session_start', handler: GateHookHandler): void
+  on(event: 'session_shutdown', handler: GateHookHandler): void
 }
 
 /** The slice of the Pi session context the gate reads (defensive narrowing). */

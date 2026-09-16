@@ -136,7 +136,12 @@ export interface GateEvaluationOutcome {
   attempted: boolean
   /** True when this workspace was already evaluated this session. */
   repeated: boolean
-  /** Set when the evaluation was refused by the one-retry cap. */
+  /**
+   * Set when the evaluation was refused without routing: either the
+   * one-retry cap refused a re-attempt after an earlier failure, or the
+   * session was replaced mid-evaluation and the late classification was
+   * dropped (a teardown artefact, not workspace state).
+   */
   refusedReason: string | null
   /** True when an unexpected gate failure was captured into state (fail-open). */
   failed: boolean
@@ -582,6 +587,28 @@ export class LifecycleGate {
       // maintenance-spawn.
       session.isolator?.ensureMapping(cwd)
       const classification = await session.classifier.classify(cwd)
+      // Session replaced while the evaluation ran (/resume, /new, /fork,
+      // /reload): the per-session state was reset and the shutdown sweep
+      // (cleanup.ts `killAll`) cancelled any in-flight probe children. A
+      // classification that lands now is a teardown artefact — the fail-safe
+      // buckets it maps onto (corrupt-adjacent unknown for a CANCELLED probe,
+      // unparseable partial output) describe the switch, not the workspace.
+      // Routing it would emit one-time user-facing notices for a session that
+      // no longer exists — the post-resume "appears corrupt" warning. Drop it:
+      // record nothing, notify nothing, and leave the retry ledger untouched
+      // (the probes ran; this is not a failed evaluation to retry).
+      if (this.session !== session) {
+        const dropped: GateEvaluationOutcome = {
+          cwd,
+          state: this.lastState(session, cwd),
+          attempted: true,
+          repeated,
+          refusedReason:
+            'evaluation dropped: the session was replaced while it ran (/resume, /new, /fork, or /reload); the late classification is a teardown artefact, not workspace state',
+          failed: false,
+        }
+        return dropped
+      }
       // The classifier never throws, but a rethrow here would mean an
       // unexpected internal defect — the catch below still owns it.
       this.route(session, classification)

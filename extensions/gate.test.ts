@@ -804,6 +804,91 @@ describe('LifecycleGate task 3.3 audit fills (probe budgets, dispose, teardown)'
   })
 })
 
+/**
+ * The post-resume corruption warning (fix/resume-corrupt-warning): pi
+ * rebinds extensions on session replacement, and the outgoing session's
+ * teardown sweep (cleanup.ts killAll) cancels any in-flight probe children.
+ * The still-running background evaluation then receives CANCELLED probe
+ * results, the fail-safe classifier maps them onto the corrupt bucket, and
+ * — before the fix — the stale evaluation routed that classification on the
+ * replaced session object, emitting the one-time "appears corrupt or
+ * unusable" notice. A late classification for a replaced session is a
+ * teardown artefact and must never surface.
+ */
+describe('LifecycleGate stale-evaluation drop (the post-resume corrupt warning)', () => {
+  it('never notifies from a classification that lands after the session was replaced', async () => {
+    const workspace = makeWorkspace(true)
+    const shimDir = mkdtempSync(join(tmpdir(), 'cgc-gate-resume-'))
+    createdDirs.push(shimDir)
+    const shim = join(shimDir, 'cgc-fake')
+    const statsStarted = join(shimDir, 'stats-started')
+    try {
+      // A fake `cgc`: the version probe succeeds; the stats probe hangs until
+      // signalled — the teardown-cancelled probe of the /resume race.
+      writeFileSync(
+        shim,
+        [
+          '#!/bin/sh',
+          'if [ "$1" = "--version" ]; then',
+          '  printf "CodeGraphContext, version 9.9.9\\n"',
+          '  exit 0',
+          'fi',
+          'if [ "$1" = "stats" ]; then',
+          `  : > ${statsStarted}`,
+          '  exec sleep 60',
+          'fi',
+          'exit 2',
+        ].join('\n'),
+        'utf8',
+      )
+      chmodSync(shim, 0o755)
+
+      const runner = new CgcRunner({ executable: shim })
+      const notifications: { text: string; type: string }[] = []
+      const { handlers, api } = makeApi()
+      const gate = new LifecycleGate({
+        runner,
+        config: makeConfig(),
+        api,
+        notify: (text, type) => notifications.push({ text, type }),
+      })
+      gate.register()
+
+      // The session-start evaluation runs in the background exactly as at
+      // launch; the hanging stats child is its in-flight probe.
+      handlers.get('session_start')?.(
+        { type: 'session_start' },
+        {
+          cwd: workspace,
+          ui: { notify: () => undefined },
+        },
+      )
+      for (let i = 0; i < 500; i++) {
+        if (existsSync(statsStarted) && runner.isInFlight(workspace)) break
+        await new Promise<void>((resolve) => setTimeout(resolve, 10))
+      }
+      expect(runner.isInFlight(workspace)).toBe(true)
+
+      // /resume: pi emits session_shutdown for the outgoing session, then
+      // the teardown sweep cancels every in-flight probe child while the
+      // evaluation is still awaiting it.
+      handlers.get('session_shutdown')?.({ type: 'session_shutdown' }, {})
+      await runner.killAll()
+
+      // The CANCELLED result settles the stale evaluation; the fail-safe
+      // classifier maps it onto the corrupt bucket. The replaced session
+      // must surface nothing.
+      for (let i = 0; i < 200; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+      expect(notifications).toEqual([])
+    } finally {
+      rmSync(shimDir, { recursive: true, force: true })
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --context flag)', () => {
   function makeFakeRepo(): string {
     const repo = mkdtempSync(join(tmpdir(), 'cgc-gate-repo-'))

@@ -168,7 +168,7 @@ export function createGuidanceReadiness(source?: GuidanceSnapshotSource): Guidan
  *     session.
  */
 export interface GuidanceInjectionApi {
-  on(event: 'before_agent_start', handler: (event: unknown, ctx: unknown) => unknown): unknown
+  on(event: 'before_agent_start', handler: (event: unknown, ctx: unknown) => unknown): void
   on(event: 'session_start', handler: (event: unknown, ctx: unknown) => unknown): unknown
   on(event: 'session_shutdown', handler: (event: unknown, ctx: unknown) => unknown): unknown
 }
@@ -495,7 +495,7 @@ export const GUIDANCE_ROUTING_SKILL_PATH = join(
  * satisfies it structurally (the same seam pattern as the sibling modules).
  */
 export interface GuidanceSkillDiscoverApi {
-  on(event: 'resources_discover', handler: (event: unknown, ctx: unknown) => unknown): unknown
+  on(event: 'resources_discover', handler: (event: unknown, ctx: unknown) => void): void
 }
 
 /** Options for {@link GuidanceSkillExposure}. */

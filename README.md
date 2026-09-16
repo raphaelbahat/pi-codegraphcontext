@@ -48,6 +48,7 @@ malformed `.git` pointer simply means "not a worktree") instead of producing wro
   on `127.0.0.1`, loopback only) speeds up the session-start indexedness check for
   non-bundled backends (Neo4j / FalkorDB); see `cgc.api` below. Without it the
   `cgc list` CLI probe decides instead — behavior is identical, only slower.
+
 ## Installation
 
 1. Install the `cgc` CLI and confirm it works:
@@ -241,5 +242,6 @@ bun install
 bun test          # 869 tests across 31 files
 bunx tsc --noEmit # type check
 ```
+
 The extension is fully covered by the per-capability specs under
 `openspec/specs/` and the archived change history under `openspec/changes/archive/`.

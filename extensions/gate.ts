@@ -99,8 +99,8 @@ export type GateNoticeSink = (text: string, type: GateNoticeType) => void
 export interface GateExtensionApi {
   // Registration returns nothing the caller uses (pi's `on` return is ignored);
   // `void` names that contract instead of an opaque unknown.
-  on(event: 'session_start', handler: (event: unknown, ctx: unknown) => unknown): void
-  on(event: 'session_shutdown', handler: (event: unknown, ctx: unknown) => unknown): void
+  on(event: 'session_start', handler: (event: unknown, ctx: unknown) => void): void
+  on(event: 'session_shutdown', handler: (event: unknown, ctx: unknown) => void): void
 }
 
 /** The slice of the Pi session context the gate reads (defensive narrowing). */

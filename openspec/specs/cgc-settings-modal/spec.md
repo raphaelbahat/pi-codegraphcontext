@@ -1,6 +1,7 @@
 # cgc-settings-modal Specification
 
 ## Purpose
+
 An in-session settings surface: the `/cgc config` verb opens a modal (pi-tui, framed and padded) over every extension configuration key with its effective value, source, and validation — letting the user view and edit the extension's behavior from within Pi without hand-editing JSON files, with layer-targeted never-clobber persistence and honest next-session effect semantics.
 
 ## Requirements

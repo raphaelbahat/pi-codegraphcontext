@@ -217,7 +217,8 @@ export interface CgcStatusView {
    * feat/status-index-info: the passive indexedness answer with its deciding
    * source (see {@link resolveStatusIndexLine} for the chain and the
    * passive-probe trade-off). Optional for view-construction compatibility:
-   * undefined renders as `unknown (probe unavailable)`.
+   * undefined renders as `unknown`. The deciding source stays available on
+   * the {@link CgcStatusIndexLine} object (diagnostics) but is not rendered.
    */
   index?: CgcStatusIndexLine | null
 }
@@ -422,15 +423,15 @@ const INDEX_VALUE_LABELS: Readonly<Record<CgcStatusIndexLine['value'], string>> 
 })
 
 /**
- * The status view's Index line: the indexedness answer AND the source that
- * decided it. An unresolved answer (no probe available, or every probe
- * inconclusive) renders as `unknown (probe unavailable)` — the passive view
- * never guesses and never triggers work.
+ * The status view's Index line: the indexedness answer ONLY. The deciding
+ * source that {@link resolveStatusIndexLine} attaches to the answer stays
+ * available internally (diagnostics/reasoning), but the rendered line shows
+ * just the status value — `indexed`, `likely indexed`, `not indexed`, or
+ * `unknown` — never the fetch method that produced it.
  */
 export function formatIndexLine(index: CgcStatusIndexLine | null | undefined): string {
   const value = index === null || index === undefined ? 'unknown' : index.value
-  const source = index === null || index === undefined ? 'probe unavailable' : index.source
-  return `Index: ${INDEX_VALUE_LABELS[value]} (${source})`
+  return `Index: ${INDEX_VALUE_LABELS[value]}`
 }
 
 function formatLastActionLine(snapshot: LifecycleSnapshot | null): string {
@@ -478,11 +479,12 @@ function formatFreshnessLine(freshness: CgcFreshnessSummary): string {
  * Render one status report (task 1.2). Lines:
  *   - header naming the active workspace,
  *   - lifecycle state (with the classification reason when recorded),
- *   - the Index line (feat/status-index-info): the passive indexedness answer
- *     with its deciding source — from the snapshot when recorded, else
- *     through the bounded read-only marker → API point lookup → `cgc list`
- *     chain ({@link resolveStatusIndexLine}), `unknown (probe unavailable)`
- *     when nothing can answer,
+ *   - the Index line (feat/status-index-info): the passive indexedness
+ *     answer — from the snapshot when recorded, else through the bounded
+ *     read-only marker → API point lookup → `cgc list` chain
+ *     ({@link resolveStatusIndexLine}), `unknown` when nothing can answer.
+ *     The deciding source of the answer is kept internally (diagnostics)
+ *     but is not rendered — the line shows only the status value.
  *   - the last recorded action (kind, detail, relative time; "none recorded"
  *     when the store has nothing yet),
  *   - running-work progress: the activity label while work runs (indexing /

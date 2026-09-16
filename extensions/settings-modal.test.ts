@@ -621,6 +621,9 @@ describe('buildSettingsModalComponent (the thin TUI composition, tasks 2.1/2.2)'
     return buildSettingsModalComponent({ theme, rows, initialTarget: 'project', paths, onClose })
   }
 
+  /** Strip SGR sequences so ANSI-colored rendering asserts on visible columns. */
+  const stripAnsi = (s: string): string =>
+    s.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
   it('renders the leading rows with their effective values and the next-session note', () => {
     const closed: SettingsModalOutcome[] = []
     const rows = buildSettingsRows(makeLoaded(), {})
@@ -634,6 +637,45 @@ describe('buildSettingsModalComponent (the thin TUI composition, tasks 2.1/2.2)'
       expect(text).toContain(row.key)
     }
     expect(closed).toEqual([])
+  })
+
+  it('frames the content in a padded rounded box (the /context reference framing)', () => {
+    const closed: SettingsModalOutcome[] = []
+    const component = build(buildSettingsRows(makeLoaded(), {}), closed.push.bind(closed))
+    const lines = component.render(120)
+
+    // Rounded top and bottom borders spanning the full width.
+    expect(stripAnsi(lines[0] ?? '')).toBe(`╭${'─'.repeat(118)}╮`)
+    expect(stripAnsi(lines.at(-1) ?? '')).toBe(`╰${'─'.repeat(118)}╯`)
+
+    // Every body line is flanked by the border columns and padded to the
+    // full width (no text bleeding out of the frame).
+    for (const line of lines.slice(1, -1)) {
+      const plain = stripAnsi(line)
+      expect(plain.startsWith('│')).toBe(true)
+      expect(plain.trimEnd().endsWith('│')).toBe(true)
+      expect(plain.trimEnd()).toHaveLength(120)
+    }
+
+    // The Box(2, 1) inner padding: content starts two columns inside the
+    // border, with one blank padded row directly under the top border.
+    expect(stripAnsi(lines[1] ?? '')).toBe(`│${' '.repeat(118)}│`)
+    const text = lines.join('\n')
+    expect(text).toContain('CGC settings')
+  })
+
+  it('keeps the frame intact at narrow widths (content truncates inside the border)', () => {
+    const closed: SettingsModalOutcome[] = []
+    const component = build(buildSettingsRows(makeLoaded(), {}), closed.push.bind(closed))
+    const lines = component.render(60)
+
+    expect(stripAnsi(lines[0] ?? '')).toBe(`╭${'─'.repeat(58)}╮`)
+    for (const line of lines.slice(1, -1)) {
+      const plain = stripAnsi(line)
+      expect(plain.startsWith('│')).toBe(true)
+      expect(plain.trimEnd().endsWith('│')).toBe(true)
+      expect(plain.trimEnd()).toHaveLength(60)
+    }
   })
 
   it('ESC closes with a cancel outcome (staged edits discarded)', () => {

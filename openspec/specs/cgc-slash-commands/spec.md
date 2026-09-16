@@ -43,7 +43,7 @@ Rule: The extension SHALL provide a `/cgc status` command that reports the activ
 
 - **GIVEN** every indexedness signal is unavailable, inconclusive, or failing
 - **WHEN** the user runs `/cgc status`
-- **THEN** the Index line renders `unknown (probe unavailable)`, the command raises no error, and no maintenance work is triggered
+- **THEN** the Index line renders `unknown`, the command raises no error, and no maintenance work is triggered
 
 ### Requirement: Index command consent gates
 

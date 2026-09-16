@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.5.0...v0.6.0) (2026-09-16)
+
+
+### Features
+
+* make cgc-routing model-invocable — drop disable-model-invocation so the agent can autonomously pull the deep routing content; the skill stays user-executable via /skill:cgc-routing ([db36707](https://github.com/raphaelbahat/pi-codegraphcontext/commit/db36707093a50a2db6536b9953df2cbc6bbdf544))
+
 ## [0.5.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.4.2...v0.5.0) (2026-09-16)
 
 

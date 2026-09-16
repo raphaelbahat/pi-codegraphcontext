@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.7.2...v0.8.0) (2026-09-16)
+
+
+### Features
+
+* session rebind — resumed sessions become fully live ([3e47a4e](https://github.com/raphaelbahat/pi-codegraphcontext/commit/3e47a4e649eb8217931e6eceb4add67f5705c8bb))
+
 ## [0.7.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.7.1...v0.7.2) (2026-09-16)
 
 

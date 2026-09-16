@@ -1713,3 +1713,84 @@ describe('StatusHud human-facing only (spec "Agent context unaffected")', () => 
     expect(source).not.toContain('addContext')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Session rebind (add-cgc-session-rebind): the status HUD is a cached
+// singleton; register() must re-subscribe onto a replacement session's API,
+// re-arming the once-per-session warning ledger for the new session.
+// ---------------------------------------------------------------------------
+
+function countingHudApi(): {
+  wired: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>
+  api: StatusHudExtensionApi
+} {
+  const wired = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>()
+  const api: StatusHudExtensionApi = {
+    on(
+      event: 'session_start' | 'session_shutdown',
+      handler: (event: unknown, ctx: unknown) => unknown,
+    ): unknown {
+      const list = wired.get(event) ?? []
+      list.push(handler)
+      wired.set(event, list)
+      return undefined
+    },
+  }
+  return { wired, api }
+}
+
+describe('StatusHud session rebind (add-cgc-session-rebind)', () => {
+  it('re-subscribes onto a replacement API and re-arms the warning ledger', () => {
+    const cwd = '/repo'
+    const store = new LifecycleStateStore()
+    // An unavailable workspace: the unindexed/unavailable warning condition
+    // fires once per session through the session notice surface.
+    store.recordClassification(classification(cwd, 'unavailable'))
+    const setStatus = (key: string, text: string | undefined): void => {
+      chipCalls.push({ key, text })
+    }
+    const noticeCalls: NoticeCall[] = []
+    const notify = (message: string, severity: NoticeSeverity): unknown => {
+      noticeCalls.push({ severity, text: message })
+      return undefined
+    }
+    const chipCalls: ChipCall[] = []
+
+    const a = countingHudApi()
+    const hud = new StatusHud({
+      storeFor: () => store,
+      api: a.api,
+      debounceMs: 1,
+    })
+    hud.register()
+    expect(a.wired.get('session_start')).toHaveLength(1)
+    expect(a.wired.get('session_shutdown')).toHaveLength(1)
+
+    // Same-API re-registration stays a single subscription.
+    hud.register()
+    expect(a.wired.get('session_start')).toHaveLength(1)
+
+    // Session replacement: the fresh API receives both hooks.
+    const b = countingHudApi()
+    hud.register(b.api)
+    expect(b.wired.get('session_start')).toHaveLength(1)
+    expect(b.wired.get('session_shutdown')).toHaveLength(1)
+    expect(a.wired.get('session_start')).toHaveLength(1)
+
+    // Session A: the warning condition surfaces exactly once.
+    const startA = a.wired.get('session_start')?.[0]
+    startA?.({ type: 'session_start' }, { cwd, mode: 'tui', ui: { setStatus, notify } })
+    const warningsInA = noticeCalls.length
+    expect(warningsInA).toBeGreaterThan(0)
+
+    // Outgoing session shutdown, then session B through the rebound hooks:
+    // the once-per-session ledger re-arms, so the same condition may surface
+    // again in the new session.
+    b.wired.get('session_shutdown')?.[0]?.({ type: 'session_shutdown' }, {})
+    b.wired.get('session_start')?.[0]?.(
+      { type: 'session_start' },
+      { cwd, mode: 'tui', ui: { setStatus, notify } },
+    )
+    expect(noticeCalls.length).toBeGreaterThan(warningsInA)
+  })
+})

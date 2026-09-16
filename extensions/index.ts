@@ -45,6 +45,7 @@ import { WorkspaceDetector } from './workspace'
 let cachedConfig: ConfigResult | undefined
 let cachedRunner: CgcRunner | undefined
 let cachedCleanup: ProcessCleanupHandle | undefined
+let cachedCleanupApi: CleanupExtensionApi | undefined
 let cachedApiRegistry: ApiRegistryClient | undefined
 let cachedDetector: WorkspaceDetector | undefined
 let cachedStateStore: LifecycleStateStore | undefined
@@ -56,6 +57,12 @@ let cachedGuidanceSkillExposure: GuidanceSkillExposure | undefined
 let cachedDriftSteerInjector: DriftSteerInjector | undefined
 let cachedResultAnnotator: ResultAnnotator | undefined
 let cachedStatusHud: StatusHud | undefined
+// Session rebind (add-cgc-session-rebind): the command and CLI-gap tool
+// registrations are not memoized, so the factory would re-register them on
+// every run. Keyed on the API instance instead: re-register on a fresh API
+// (session replacement), skip the same API (per-API idempotence).
+let registeredCommandsApi: ExtensionAPI | undefined
+let registeredCliGapApi: ExtensionAPI | undefined
 
 /**
  * Resolved extension configuration (defaults <- config files <- env overrides).
@@ -74,6 +81,16 @@ export function getConfig(): ConfigResult {
  */
 export function getRunner(): CgcRunner | undefined {
   return cachedRunner
+}
+
+/**
+ * The extension's lifecycle gate (created on the first extension registration
+ * that has a runner). Test/diagnostic accessor in the shape of `getRunner`:
+ * the rebind tests drive the gate's snapshot surface through it after a
+ * simulated session replacement.
+ */
+export function getGate(): LifecycleGate | undefined {
+  return cachedGate
 }
 
 /**
@@ -113,6 +130,13 @@ export function getCleanupEvents(): readonly CleanupEvent[] {
 }
 
 export default function piCodegraphcontext(pi: ExtensionAPI): void {
+  // Session rebind (add-cgc-session-rebind): pi re-runs this factory for
+  // every replaced session with a fresh API instance. The cached singletons
+  // below keep their cross-session state (the runner's child tracking, the
+  // process-lifetime stores); every guarded surface's register() carries an
+  // api-identity guard, so passing the current `pi` re-wires its hooks onto
+  // the new session's API while staying a no-op on the same API.
+
   // Warm the config cache so warnings surface once at load. Config problems
   // never break extension load: this stays fail-open and never throws.
   try {
@@ -131,11 +155,29 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       redactSecrets: config.output.redactSecrets,
       gcfOutput: config.output.gcf,
     })
-    cachedCleanup ??= installProcessCleanup(cachedRunner, {
+    // Session rebind (add-cgc-session-rebind): pi re-runs this factory on
+    // every session replacement (/resume, /new, /fork, /reload) with a fresh
+    // API instance. The cleanup handle cannot re-wire in place (its
+    // `session_shutdown` hook and its process `exit`/signal listeners are
+    // baked in at install), so a different API means: dispose the old handle
+    // (removing the old process listeners; the old hook goes no-op via its
+    // disposed flag) and install a fresh one for the new API — exactly one
+    // sweep per teardown path. The old installation's diagnostics are dropped
+    // with it: they describe a dead installation.
+    const cleanupApi = pi as unknown as CleanupExtensionApi
+    if (cachedCleanup === undefined || cachedCleanupApi !== cleanupApi) {
+      if (cachedCleanup !== undefined) {
+        try {
+          cachedCleanup.dispose()
+        } catch {
+          // Fail-open: a throwing dispose never blocks the reinstallation.
+        }
+      }
       // ExtensionAPI's overloaded `on` is structurally wider than the minimal
       // seam type; the cast narrows the surface the cleanup module may touch.
-      api: pi as unknown as CleanupExtensionApi,
-    })
+      cachedCleanup = installProcessCleanup(cachedRunner, { api: cleanupApi })
+      cachedCleanupApi = cleanupApi
+    }
     cachedDetector ??= new WorkspaceDetector({
       runner: cachedRunner,
       versionProbeTimeoutMs: config.cgc.versionProbeTimeoutMs,
@@ -179,7 +221,10 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
         api: pi as unknown as GateExtensionApi,
         apiRegistry: cachedApiRegistry,
       })
-      cachedGate.register()
+      // The api-identity guard inside register(): the same API is an
+      // idempotent no-op; a different API (session replacement) re-wires the
+      // hooks onto it. Same call shape on every factory run.
+      cachedGate.register(pi as unknown as GateExtensionApi)
     }
   } catch {
     // Fail-open: gate registration must never break extension load. Without
@@ -220,7 +265,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       watch: getConfig().config.freshness.watch,
       api: pi as unknown as FreshnessExtensionApi,
     })
-    cachedFreshnessObserver.register()
+    cachedFreshnessObserver.register(pi as unknown as FreshnessExtensionApi)
   } catch {
     // Fail-open: observer registration must never break extension load.
   }
@@ -246,7 +291,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
         cachedFreshnessObserver === undefined ? null : getFreshnessStateStore(),
       api: pi as unknown as StatusHudExtensionApi,
     })
-    cachedStatusHud.register()
+    cachedStatusHud.register(pi as unknown as StatusHudExtensionApi)
   } catch {
     // Fail-open: HUD registration must never break extension load. Without a
     // registered HUD the extension performs no status rendering — the session
@@ -316,7 +361,10 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       // instance assigned later in this registration pass.
       annotateResult: (text: string) => cachedResultAnnotator?.annotate(text) ?? text,
     }
-    registerCgcCommands(pi, dependencies)
+    if (registeredCommandsApi !== pi) {
+      registerCgcCommands(pi, dependencies)
+      registeredCommandsApi = pi
+    }
   } catch {
     // Fail-open: command registration must never break extension load.
   }
@@ -343,7 +391,10 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
         cliGapDeps.context = createContextExecutor({ runner: cachedRunner })
         cliGapDeps.doctor = createDoctorExecutor({ runner: cachedRunner })
       }
-      registerCliGapTools(pi as unknown as CliGapToolsApi, cliGapDeps)
+      if (registeredCliGapApi !== pi) {
+        registerCliGapTools(pi as unknown as CliGapToolsApi, cliGapDeps)
+        registeredCliGapApi = pi
+      }
     }
   } catch {
     // Fail-open: tool registration must never break extension load. Without
@@ -368,7 +419,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       sourceFor: (cwd: string) => cachedGate?.lastClassification(cwd) ?? null,
       api: pi as unknown as ProactiveInjectionApi,
     })
-    cachedCoverageInjector.register()
+    cachedCoverageInjector.register(pi as unknown as ProactiveInjectionApi)
   } catch {
     // Fail-open: injection registration must never break extension load.
   }
@@ -390,7 +441,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       routingSkillPointer: getConfig().config.guidance.routingSkill,
       api: pi as unknown as GuidanceInjectionApi,
     })
-    cachedGuidanceInjector.register()
+    cachedGuidanceInjector.register(pi as unknown as GuidanceInjectionApi)
   } catch {
     // Fail-open: guidance injection registration must never break extension load.
   }
@@ -409,7 +460,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       enabled: getConfig().config.guidance.routingSkill,
       api: pi as unknown as GuidanceSkillDiscoverApi,
     })
-    cachedGuidanceSkillExposure.register()
+    cachedGuidanceSkillExposure.register(pi as unknown as GuidanceSkillDiscoverApi)
   } catch {
     // Fail-open: skill exposure registration must never break extension load.
   }
@@ -431,7 +482,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       sourceFor: (cwd: string) => cachedGate?.lastClassification(cwd) ?? null,
       api: pi as unknown as ProactiveInjectionApi,
     })
-    cachedDriftSteerInjector.register()
+    cachedDriftSteerInjector.register(pi as unknown as ProactiveInjectionApi)
   } catch {
     // Fail-open: steer registration must never break extension load.
   }
@@ -457,7 +508,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       sourceFor: (cwd: string) => cachedGate?.lastClassification(cwd) ?? null,
       api: pi as unknown as ProactiveInjectionApi,
     })
-    cachedResultAnnotator.register()
+    cachedResultAnnotator.register(pi as unknown as ProactiveInjectionApi)
   } catch {
     // Fail-open: annotator registration must never break extension load.
   }

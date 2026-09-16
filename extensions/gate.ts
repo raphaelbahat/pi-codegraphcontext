@@ -266,7 +266,7 @@ interface GateSession {
 export class LifecycleGate {
   private readonly runner: CgcRunner
   private readonly config: ExtensionConfig
-  private readonly api: GateExtensionApi | undefined
+  private api: GateExtensionApi | undefined
   private readonly externalNotify: GateNoticeSink | undefined
   private readonly classifierOverride: GateClassifierLike | undefined
   private readonly apiRegistry: ApiRegistryClient | undefined
@@ -288,19 +288,33 @@ export class LifecycleGate {
    * Wire the `session_start` and `session_shutdown` hooks. Idempotent and
    * fail-open: a broken API never throws out of registration (the hooks are
    * also individually guarded). No-op after `dispose()`.
+   *
+   * Session rebind (add-cgc-session-rebind): pi re-runs the extension factory
+   * on every session replacement with a fresh API instance. When `api` is
+   * supplied and differs from the API this gate is wired to, the gate adopts
+   * it, re-arms its registration flag, and wires the hooks onto the new API —
+   * the old API's handlers are unreachable after the replacement (pi drops
+   * the old extension instance). The same API (or no argument) stays the
+   * existing idempotent no-op.
    */
-  register(): void {
-    if (this.disposed || this.registered) return
+  register(api?: GateExtensionApi): void {
+    if (this.disposed) return
+    if (api !== undefined && api !== this.api) {
+      // Session replacement: adopt the fresh API and re-arm registration.
+      this.api = api
+      this.registered = false
+    }
+    if (this.registered) return
     this.registered = true
-    const api = this.api
-    if (api === undefined) return
+    const target = this.api
+    if (target === undefined) return
     try {
-      api.on('session_start', this.handleSessionStart)
+      target.on('session_start', this.handleSessionStart)
     } catch {
       // Fail-open: extension load must never break on a throwing API.
     }
     try {
-      api.on('session_shutdown', this.handleSessionShutdown)
+      target.on('session_shutdown', this.handleSessionShutdown)
     } catch {
       // Fail-open (same rationale).
     }

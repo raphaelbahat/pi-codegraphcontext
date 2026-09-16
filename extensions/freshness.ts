@@ -218,7 +218,7 @@ export interface FreshnessDriftObserverOptions {
 export class FreshnessDriftObserver {
   private readonly store: FreshnessStateStore
   private readonly worktreeBlockFor: ((cwd: string) => FreshnessWorktreeBlock | null) | undefined
-  private readonly api: FreshnessExtensionApi | undefined
+  private api: FreshnessExtensionApi | undefined
   private readonly now: () => number
 
   private registered = false
@@ -278,14 +278,25 @@ export class FreshnessDriftObserver {
    * Wire the session and `tool_call` hooks. Idempotent and fail-open: a
    * broken API never throws out of registration (each hook is also
    * individually guarded). No-op after `dispose()`.
+   *
+   * Session rebind (add-cgc-session-rebind): when `api` is supplied and
+   * differs from the API this observer is wired to (pi re-runs the factory on
+   * every session replacement), adopt it, re-arm the registration flag, and
+   * wire the hooks onto the new API. The same API stays the idempotent no-op.
    */
-  register(): void {
-    if (this.disposed || this.registered) return
+  register(api?: FreshnessExtensionApi): void {
+    if (this.disposed) return
+    if (api !== undefined && api !== this.api) {
+      // Session replacement: adopt the fresh API and re-arm registration.
+      this.api = api
+      this.registered = false
+    }
+    if (this.registered) return
     this.registered = true
-    const api = this.api
-    if (api === undefined) return
+    const target = this.api
+    if (target === undefined) return
     try {
-      api.on('session_start', this.handleSessionStart)
+      target.on('session_start', this.handleSessionStart)
     } catch (error) {
       // Fail-open: extension load must never break on a throwing API. The
       // failure is recorded (task 3.2), deferred until a session start
@@ -293,12 +304,12 @@ export class FreshnessDriftObserver {
       this.registrationErrors.push(errorMessage(error, 'subscribe session_start'))
     }
     try {
-      api.on('session_shutdown', this.handleSessionShutdown)
+      target.on('session_shutdown', this.handleSessionShutdown)
     } catch (error) {
       this.registrationErrors.push(errorMessage(error, 'subscribe session_shutdown'))
     }
     try {
-      api.on('tool_call', this.handleToolCall)
+      target.on('tool_call', this.handleToolCall)
     } catch (error) {
       this.registrationErrors.push(errorMessage(error, 'subscribe tool_call'))
     }

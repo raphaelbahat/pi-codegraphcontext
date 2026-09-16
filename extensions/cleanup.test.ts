@@ -315,3 +315,53 @@ describe('spill cleanup through every session teardown path (task 2.3)', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Session rebind (add-cgc-session-rebind): the cleanup handle captures its
+// API and process listeners at install, so the factory's rebind discipline is
+// dispose-the-old + install-the-new. The invariant under test: exactly one
+// `exit` listener per active installation, and the old handle's shutdown hook
+// goes inert after dispose.
+// ---------------------------------------------------------------------------
+
+describe('installProcessCleanup session rebind (add-cgc-session-rebind)', () => {
+  it('dispose-then-reinstall keeps exactly one exit listener and retires the old shutdown hook', async () => {
+    const runner = new CgcRunner({ executable: BUN })
+    const fakeProcess = new FakeProcess()
+    const apiA = new FakeExtensionApi()
+    const apiB = new FakeExtensionApi()
+
+    // First installation (session A): one `exit` listener, one shutdown hook.
+    const handleA = installProcessCleanup(runner, {
+      api: apiA as never,
+      processObject: fakeProcess as never,
+      signals: [],
+    })
+    expect(fakeProcess.listenerCount('exit')).toBe(1)
+    expect(apiA.handlers).toHaveLength(1)
+
+    // Session replacement: dispose the old installation, install the new.
+    // The old handle removes its process listeners and its (unremovable)
+    // shutdown hook goes no-op via its disposed flag.
+    handleA.dispose()
+    expect(fakeProcess.listenerCount('exit')).toBe(0)
+    apiA.emitShutdown()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(handleA.events).toHaveLength(0)
+
+    const handleB = installProcessCleanup(runner, {
+      api: apiB as never,
+      processObject: fakeProcess as never,
+      signals: [],
+    })
+    // Not two: the dispose-first discipline prevents duplicate sweeps.
+    expect(fakeProcess.listenerCount('exit')).toBe(1)
+
+    // The new installation's shutdown hook performs the sweep and records it.
+    apiB.emitShutdown()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(handleB.events.map((event) => event.path)).toContain('session-shutdown')
+
+    fakeProcess.emit('exit')
+  })
+})

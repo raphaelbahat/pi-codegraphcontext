@@ -381,7 +381,7 @@ export interface CoverageNoteInjectorOptions {
 export class CoverageNoteInjector {
   private readonly sessionNote: boolean
   private readonly sourceFor: CoverageDataProvider
-  private readonly api: ProactiveInjectionApi | undefined
+  private api: ProactiveInjectionApi | undefined
   /** The readiness predicate this tier gates on; production default: {@link isGuidanceReady}. */
   private readonly readiness: ReadinessPredicate
 
@@ -407,24 +407,35 @@ export class CoverageNoteInjector {
    * Wire the session and injection hooks. Idempotent and fail-open: a broken
    * API never throws out of registration (each hook is also individually
    * guarded). No-op after `dispose()`.
+   *
+   * Session rebind (add-cgc-session-rebind): when `api` is supplied and
+   * differs from the API this tier is wired to (pi re-runs the factory on
+   * every session replacement), adopt it, re-arm the registration flag, and
+   * wire the hooks onto the new API. The same API stays the idempotent no-op.
    */
-  register(): void {
-    if (this.disposed || this.registered) return
+  register(api?: ProactiveInjectionApi): void {
+    if (this.disposed) return
+    if (api !== undefined && api !== this.api) {
+      // Session replacement: adopt the fresh API and re-arm registration.
+      this.api = api
+      this.registered = false
+    }
+    if (this.registered) return
     this.registered = true
-    const api = this.api
-    if (api === undefined) return
+    const target = this.api
+    if (target === undefined) return
     try {
-      api.on('session_start', this.handleSessionStart)
+      target.on('session_start', this.handleSessionStart)
     } catch {
       // Fail-open: extension load must never break on a throwing API.
     }
     try {
-      api.on('session_shutdown', this.handleSessionShutdown)
+      target.on('session_shutdown', this.handleSessionShutdown)
     } catch {
       // Fail-open (same rationale).
     }
     try {
-      api.on('before_agent_start', this.handleBeforeAgentStart)
+      target.on('before_agent_start', this.handleBeforeAgentStart)
     } catch {
       // Fail-open (same rationale).
     }
@@ -679,7 +690,7 @@ export class ResultAnnotator {
   private readonly resultAnnotations: boolean
   private readonly sourceFor: CoverageDataProvider
   private readonly freshnessFor: DriftFreshnessProvider | undefined
-  private readonly api: ProactiveInjectionApi | undefined
+  private api: ProactiveInjectionApi | undefined
   /** The readiness predicate this tier gates on; production default: {@link isGuidanceReady}. */
   private readonly readiness: ReadinessPredicate
 
@@ -710,19 +721,30 @@ export class ResultAnnotator {
    * Wire the session hooks. Idempotent and fail-open: a broken API never
    * throws out of registration (each hook is also individually guarded).
    * No-op after `dispose()`.
+   *
+   * Session rebind (add-cgc-session-rebind): when `api` is supplied and
+   * differs from the API this tier is wired to (pi re-runs the factory on
+   * every session replacement), adopt it, re-arm the registration flag, and
+   * wire the hooks onto the new API. The same API stays the idempotent no-op.
    */
-  register(): void {
-    if (this.disposed || this.registered) return
+  register(api?: ProactiveInjectionApi): void {
+    if (this.disposed) return
+    if (api !== undefined && api !== this.api) {
+      // Session replacement: adopt the fresh API and re-arm registration.
+      this.api = api
+      this.registered = false
+    }
+    if (this.registered) return
     this.registered = true
-    const api = this.api
-    if (api === undefined) return
+    const target = this.api
+    if (target === undefined) return
     try {
-      api.on('session_start', this.handleSessionStart)
+      target.on('session_start', this.handleSessionStart)
     } catch {
       // Fail-open: extension load must never break on a throwing API.
     }
     try {
-      api.on('session_shutdown', this.handleSessionShutdown)
+      target.on('session_shutdown', this.handleSessionShutdown)
     } catch {
       // Fail-open (same rationale).
     }
@@ -1156,7 +1178,7 @@ export class DriftSteerInjector {
   private readonly driftSteers: boolean
   private readonly sourceFor: CoverageDataProvider
   private readonly freshnessFor: DriftFreshnessProvider | undefined
-  private readonly api: ProactiveInjectionApi | undefined
+  private api: ProactiveInjectionApi | undefined
   /** The readiness predicate this tier gates on; production default: {@link isGuidanceReady}. */
   private readonly readiness: ReadinessPredicate
 
@@ -1186,24 +1208,35 @@ export class DriftSteerInjector {
    * Wire the session and delivery hooks. Idempotent and fail-open: a broken
    * API never throws out of registration (each hook is also individually
    * guarded). No-op after `dispose()`.
+   *
+   * Session rebind (add-cgc-session-rebind): when `api` is supplied and
+   * differs from the API this tier is wired to (pi re-runs the factory on
+   * every session replacement), adopt it, re-arm the registration flag, and
+   * wire the hooks onto the new API. The same API stays the idempotent no-op.
    */
-  register(): void {
-    if (this.disposed || this.registered) return
+  register(api?: ProactiveInjectionApi): void {
+    if (this.disposed) return
+    if (api !== undefined && api !== this.api) {
+      // Session replacement: adopt the fresh API and re-arm registration.
+      this.api = api
+      this.registered = false
+    }
+    if (this.registered) return
     this.registered = true
-    const api = this.api
-    if (api === undefined) return
+    const target = this.api
+    if (target === undefined) return
     try {
-      api.on('session_start', this.handleSessionStart)
+      target.on('session_start', this.handleSessionStart)
     } catch {
       // Fail-open: extension load must never break on a throwing API.
     }
     try {
-      api.on('session_shutdown', this.handleSessionShutdown)
+      target.on('session_shutdown', this.handleSessionShutdown)
     } catch {
       // Fail-open (same rationale).
     }
     try {
-      api.on('before_agent_start', this.handleBeforeAgentStart)
+      target.on('before_agent_start', this.handleBeforeAgentStart)
     } catch {
       // Fail-open (same rationale).
     }

@@ -197,3 +197,194 @@ describe('extension entry', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Session rebind (add-cgc-session-rebind): pi re-runs the factory on every
+// session replacement (/resume, /new, /fork, /reload) with a fresh API. The
+// contract under test: a resumed session is a fully-live session — every
+// hook-owning surface re-wires onto the new API, the gate evaluates there,
+// the teardown paths survive, and the cross-session state persists.
+// ---------------------------------------------------------------------------
+
+interface RecordedHook {
+  event: string
+  handler: (event: unknown, ctx: unknown) => unknown
+}
+
+function recordingApi(): {
+  hooks: Map<string, RecordedHook[]>
+  commands: string[]
+  tools: string[]
+  api: never
+} {
+  const hooks = new Map<string, RecordedHook[]>()
+  const commands: string[] = []
+  const tools: string[] = []
+  const api = {
+    on(event: string, handler: (event: unknown, ctx: unknown) => unknown): unknown {
+      const list = hooks.get(event) ?? []
+      list.push({ event, handler })
+      hooks.set(event, list)
+      return undefined
+    },
+    registerCommand(name: string): unknown {
+      commands.push(name)
+      return undefined
+    },
+    registerTool(tool: { name: string }): unknown {
+      tools.push(tool.name)
+      return undefined
+    },
+  }
+  return { hooks, commands, tools, api: api as never }
+}
+
+/** Poll `probe` until it returns a non-null value or the budget expires. */
+async function waitFor<T>(probe: () => T | null | undefined, budgetMs = 4000): Promise<T> {
+  const deadline = Date.now() + budgetMs
+  for (;;) {
+    const value = probe()
+    if (value !== null && value !== undefined) return value
+    if (Date.now() > deadline) throw new Error('waitFor: budget expired')
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+}
+
+describe('extension entry session rebind (add-cgc-session-rebind)', () => {
+  it(
+    'task 4.1 (the reproducing test): after a session replacement every surface registers on the ' +
+      'new API and a gate evaluation driven through it records state and flows notices',
+    async () => {
+      // A fresh module instance isolates the cached singletons. The
+      // nonexistent executable makes the gate's background evaluation fail
+      // fast to the deterministic `unavailable` state (spawn ENOENT).
+      const savedExecutable = process.env.CGC_EXECUTABLE
+      process.env.CGC_EXECUTABLE = '/nonexistent/cgc-session-rebind'
+      const savedCwd = process.cwd()
+      const workspace = mkdtempSync(join(tmpdir(), 'cgc-rebind-'))
+      try {
+        process.chdir(workspace)
+        const mod = (await freshEntry('rebind-resume=1')) as {
+          default: (api: never) => void
+          getGate: () =>
+            | {
+                snapshot: (cwd: string) => { state: string } | null
+                lifecycleStore: () => unknown
+              }
+            | undefined
+          getRunner: () => unknown
+          getLifecycleStateStore: () => unknown
+          getCleanupEvents: () => readonly { path: string; signal?: string }[]
+        }
+
+        const a = recordingApi()
+        mod.default(a.api)
+
+        // The first session starts (the gate evaluates in the background).
+        const notifyA: string[] = []
+        a.hooks
+          .get('session_start')?.[0]
+          ?.handler(
+            { type: 'session_start' },
+            { cwd: workspace, ui: { notify: (text: string) => notifyA.push(text) } },
+          )
+        await waitFor(() => mod.getGate()?.snapshot(workspace))
+
+        // Pi's replacement sequence: session_shutdown on the outgoing API,
+        // factory re-run with the fresh API, then session_start on it.
+        for (const hook of a.hooks.get('session_shutdown') ?? []) hook.handler({}, {})
+        const runnerBefore = mod.getRunner()
+        const storeBefore = mod.getLifecycleStateStore()
+        const exitListenersDuringA = process.listenerCount('exit')
+        const handlersOnABefore = [...a.hooks.values()].reduce((sum, list) => sum + list.length, 0)
+
+        const b = recordingApi()
+        mod.default(b.api)
+
+        // Every hook-owning surface registered on B: the gate (session_*),
+        // the freshness observer (tool_call), the injectors and HUD
+        // (before_agent_start / session_*), the skill exposure
+        // (resources_discover), and the cleanup sweep (session_shutdown).
+        for (const event of [
+          'session_start',
+          'session_shutdown',
+          'tool_call',
+          'before_agent_start',
+          'resources_discover',
+        ]) {
+          expect((b.hooks.get(event) ?? []).length).toBeGreaterThan(0)
+        }
+        // The command and CLI-gap tool surfaces re-register exactly once.
+        expect(b.commands.filter((name) => name === 'cgc')).toHaveLength(1)
+        for (const tool of ['cgc_bundle_export', 'cgc_context', 'cgc_doctor']) {
+          expect(b.tools.filter((name) => name === tool)).toHaveLength(1)
+        }
+        // The old API gained no new handlers (it is dead after replacement).
+        const handlersOnAAfter = [...a.hooks.values()].reduce((sum, list) => sum + list.length, 0)
+        expect(handlersOnAAfter).toBe(handlersOnABefore)
+
+        // Cross-session state persists: same runner (child tracking), same
+        // process-lifetime store; exactly one active cleanup installation.
+        expect(mod.getRunner()).toBe(runnerBefore)
+        expect(mod.getLifecycleStateStore()).toBe(storeBefore)
+        expect(process.listenerCount('exit')).toBe(exitListenersDuringA)
+
+        // A gate evaluation driven through B's session_start works: the
+        // snapshot is recorded for the resumed session and the availability
+        // notice flows to the NEW session's notify surface.
+        const notifyB: string[] = []
+        b.hooks
+          .get('session_start')?.[0]
+          ?.handler(
+            { type: 'session_start' },
+            { cwd: workspace, ui: { notify: (text: string) => notifyB.push(text) } },
+          )
+        const snapshot = await waitFor(() => mod.getGate()?.snapshot(workspace))
+        expect(snapshot.state).toBe('unavailable')
+        await waitFor(() => (notifyB.length > 0 ? true : null))
+        expect(notifyB[0]).toContain('unavailable')
+
+        // The teardown sweep on the new session records through the active
+        // (reinstalled) cleanup handle.
+        for (const hook of b.hooks.get('session_shutdown') ?? []) hook.handler({}, {})
+        await waitFor(() => {
+          const event = mod.getCleanupEvents().find((e) => e.path === 'session-shutdown')
+          return event ?? null
+        })
+      } finally {
+        if (savedExecutable === undefined) delete process.env.CGC_EXECUTABLE
+        else process.env.CGC_EXECUTABLE = savedExecutable
+        process.chdir(savedCwd)
+        rmSync(workspace, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('task 4.2 (same-api idempotence): invoking the factory twice with the same API wires each hook and the /cgc command exactly once', async () => {
+    const mod = (await freshEntry('rebind-same-api=1')) as { default: (api: never) => void }
+    const api = recordingApi()
+
+    mod.default(api.api)
+    const aCounts = new Map<string, number>()
+    for (const [event, list] of api.hooks) aCounts.set(event, list.length)
+    const hooksAfterFirst = [...api.hooks.values()].reduce((sum, list) => sum + list.length, 0)
+    const exitAfterFirst = process.listenerCount('exit')
+
+    mod.default(api.api)
+
+    // No duplicates anywhere: every event carries exactly the same handler
+    // count it had after the first run (each surface wires once per API), one
+    // /cgc command, one set of CLI-gap tools, and no additional process
+    // cleanup installation.
+    for (const [event, list] of api.hooks) {
+      expect(list).toHaveLength((aCounts.get(event) as number | undefined) ?? 0)
+    }
+    const hooksAfterSecond = [...api.hooks.values()].reduce((sum, list) => sum + list.length, 0)
+    expect(hooksAfterSecond).toBe(hooksAfterFirst)
+    expect(api.commands.filter((name) => name === 'cgc')).toHaveLength(1)
+    for (const tool of ['cgc_bundle_export', 'cgc_context', 'cgc_doctor']) {
+      expect(api.tools.filter((name) => name === tool)).toHaveLength(1)
+    }
+    expect(process.listenerCount('exit')).toBe(exitAfterFirst)
+  })
+})

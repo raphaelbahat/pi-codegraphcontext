@@ -719,3 +719,97 @@ describe('guidance fail-open retry cap (task 3.2)', () => {
     expect(injector.hasInjected()).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Session rebind (add-cgc-session-rebind): the guidance injector and the
+// routing-skill exposure are cached singletons; register() must adopt a
+// replacement session's API while the same API stays a single registration.
+// ---------------------------------------------------------------------------
+
+type GuidanceHookName = 'before_agent_start' | 'session_start' | 'session_shutdown'
+
+function countingGuidanceApi(): {
+  wired: Map<GuidanceHookName, Array<(event: unknown, ctx: unknown) => unknown>>
+  api: GuidanceInjectionApi
+} {
+  const wired = new Map<GuidanceHookName, Array<(event: unknown, ctx: unknown) => unknown>>()
+  const api: GuidanceInjectionApi = {
+    on(event: GuidanceHookName, handler: (event: unknown, ctx: unknown) => unknown): unknown {
+      const list = wired.get(event) ?? []
+      list.push(handler)
+      wired.set(event, list)
+      return undefined
+    },
+  }
+  return { wired, api }
+}
+
+describe('guidance session rebind (add-cgc-session-rebind)', () => {
+  it('rebinds all three injector hooks onto a replacement API and injects there', () => {
+    const a = countingGuidanceApi()
+    const injector = new GuidanceInjector({ snapshotFor: () => snapshot('clean') })
+    injector.register(a.api)
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    // Same-API re-registration stays a single registration.
+    injector.register(a.api)
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    // Session replacement: the fresh API receives every hook; the replaced
+    // API gains nothing further.
+    const b = countingGuidanceApi()
+    injector.register(b.api)
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(b.wired.get(name)).toHaveLength(1)
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    // The rebound injection works end to end on the new API, still at most
+    // once per session (the one-shot re-armed with the fresh session).
+    b.wired.get('session_start')?.[0]?.({ type: 'session_start' }, { cwd: '/repo' })
+    const first = b.wired.get('before_agent_start')?.[0]?.(promptEvent(), {})
+    expect(returnedPrompt(first)).toContain(GUIDANCE_SCOPE)
+    const second = b.wired.get('before_agent_start')?.[0]?.(promptEvent(), {})
+    expect(returnedPrompt(second)).toBeUndefined()
+  })
+
+  it('rebinds the discovery hook of the routing-skill exposure onto a replacement API', () => {
+    const countingExposureApi = () => {
+      const wired: Array<(event: unknown, ctx: unknown) => unknown> = []
+      const api = {
+        on(_event: 'resources_discover', handler: (event: unknown, ctx: unknown) => unknown) {
+          wired.push(handler)
+          return undefined
+        },
+      } as unknown as GuidanceSkillDiscoverApi
+      return { wired, api }
+    }
+
+    const a = countingExposureApi()
+    const exposure = new GuidanceSkillExposure({ enabled: true, api: a.api })
+    exposure.register()
+    expect(a.wired).toHaveLength(1)
+
+    exposure.register() // same api: no-op
+    expect(a.wired).toHaveLength(1)
+
+    const b = countingExposureApi()
+    exposure.register(b.api)
+    expect(b.wired).toHaveLength(1)
+    expect(a.wired).toHaveLength(1)
+
+    // Discovery through the replacement API contributes the routing skill.
+    const discover = (cwd: string): unknown => b.wired[0]?.({ cwd, reason: 'startup' }, {})
+    expect(discover('/repo')).toEqual({ skillPaths: [GUIDANCE_ROUTING_SKILL_PATH] })
+
+    // Disposed exposures stay inert across a rebind attempt.
+    exposure.dispose()
+    const c = countingExposureApi()
+    exposure.register(c.api)
+    expect(c.wired).toHaveLength(0)
+  })
+})

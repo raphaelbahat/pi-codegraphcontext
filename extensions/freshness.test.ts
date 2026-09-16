@@ -418,3 +418,64 @@ describe('getFreshnessStateStore (the shared consumer surface, design D5)', () =
     expect(summary.staleSince).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Session rebind (add-cgc-session-rebind): the freshness drift observer is a
+// cached singleton; register() must re-wire its hooks onto a replacement
+// session's API so tool-call drift marks work in resumed sessions.
+// ---------------------------------------------------------------------------
+
+function countingFreshnessApi(): {
+  wired: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>
+  api: FreshnessExtensionApi
+} {
+  const wired = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>()
+  const api: FreshnessExtensionApi = {
+    on: (event, handler) => {
+      const list = wired.get(event) ?? []
+      list.push(handler)
+      wired.set(event, list)
+      return undefined
+    },
+  }
+  return { wired, api }
+}
+
+describe('FreshnessDriftObserver session rebind (add-cgc-session-rebind)', () => {
+  it('re-wires all three hooks onto a replacement API and observes drift there', () => {
+    const store = new FreshnessStateStore()
+    const a = countingFreshnessApi()
+    const observer = new FreshnessDriftObserver({ store, api: a.api })
+    observer.register()
+    for (const event of ['session_start', 'session_shutdown', 'tool_call']) {
+      expect(a.wired.get(event)).toHaveLength(1)
+    }
+
+    // Same-API re-registration stays a single subscription.
+    observer.register()
+    for (const event of ['session_start', 'session_shutdown', 'tool_call']) {
+      expect(a.wired.get(event)).toHaveLength(1)
+    }
+
+    // Session replacement: the fresh API receives every hook; the replaced
+    // API gains nothing further.
+    const b = countingFreshnessApi()
+    observer.register(b.api)
+    for (const event of ['session_start', 'session_shutdown', 'tool_call']) {
+      expect(b.wired.get(event)).toHaveLength(1)
+      expect(a.wired.get(event)).toHaveLength(1)
+    }
+
+    // Drift observation works through the rebound hooks: a file-modifying
+    // tool call in the replacement session marks the workspace possibly-stale.
+    b.wired.get('session_start')?.[0]?.({}, { cwd: '/repo' })
+    b.wired.get('tool_call')?.[0]?.({ toolName: 'write', toolCallId: 't1', input: {} }, {})
+    expect(store.snapshot('/repo')?.status).toBe('possibly-stale')
+
+    // A disposed observer stays inert across a rebind attempt.
+    observer.dispose()
+    const c = countingFreshnessApi()
+    observer.register(c.api)
+    expect(c.wired.size).toBe(0)
+  })
+})

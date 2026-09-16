@@ -2118,3 +2118,136 @@ describe('Contract compliance (task 3.2): the full gating matrix — readiness x
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Session rebind (add-cgc-session-rebind): the three proactive tiers are
+// cached singletons; register() must re-wire their hooks onto a replacement
+// session's API, re-arming each tier's one-shot-per-session budget there.
+// ---------------------------------------------------------------------------
+
+type ProactiveHookName = 'before_agent_start' | 'session_start' | 'session_shutdown'
+
+function countingProactiveApi(): {
+  wired: Map<ProactiveHookName, Array<(event: unknown, ctx: unknown) => unknown>>
+  api: ProactiveInjectionApi
+} {
+  const wired = new Map<ProactiveHookName, Array<(event: unknown, ctx: unknown) => unknown>>()
+  const api: ProactiveInjectionApi = {
+    on(event: ProactiveHookName, handler: (event: unknown, ctx: unknown) => unknown): unknown {
+      const list = wired.get(event) ?? []
+      list.push(handler)
+      wired.set(event, list)
+      return undefined
+    },
+  }
+  return { wired, api }
+}
+
+describe('proactive session rebind (add-cgc-session-rebind)', () => {
+  it('CoverageNoteInjector rebinds all three hooks and re-arms the one-shot in the replacement session', () => {
+    const a = countingProactiveApi()
+    const injector = new CoverageNoteInjector({
+      sessionNote: true,
+      sourceFor: (cwd: string) => classified(cwd, 'clean'),
+      api: a.api,
+    })
+    injector.register()
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    injector.register() // same api: idempotent
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    const b = countingProactiveApi()
+    injector.register(b.api)
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(b.wired.get(name)).toHaveLength(1)
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    // The one-shot re-armed with the replacement session: the note injects
+    // again there, exactly once.
+    b.wired.get('session_start')?.[0]?.({ type: 'session_start' }, { cwd: '/repo' })
+    const first = returnedPrompt(b.wired.get('before_agent_start')?.[0]?.(promptEvent(), {}))
+    expect(first).not.toBeUndefined()
+    expect(injector.hasInjected()).toBe(true)
+    expect(
+      returnedPrompt(b.wired.get('before_agent_start')?.[0]?.(promptEvent(), {})),
+    ).toBeUndefined()
+
+    // A disposed tier stays inert across a rebind attempt.
+    injector.dispose()
+    const c = countingProactiveApi()
+    injector.register(c.api)
+    expect(c.wired.size).toBe(0)
+  })
+
+  it('DriftSteerInjector rebinds all three hooks (same-api idempotent, replaced api untouched)', () => {
+    const a = countingProactiveApi()
+    const steer = new DriftSteerInjector({
+      driftSteers: true,
+      sourceFor: (cwd: string) => classified(cwd, 'clean'),
+      api: a.api,
+    })
+    steer.register()
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    steer.register() // same api: idempotent
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    const b = countingProactiveApi()
+    steer.register(b.api)
+    for (const name of ['session_start', 'session_shutdown', 'before_agent_start'] as const) {
+      expect(b.wired.get(name)).toHaveLength(1)
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    steer.dispose()
+    const c = countingProactiveApi()
+    steer.register(c.api)
+    expect(c.wired.size).toBe(0)
+  })
+
+  it('ResultAnnotator rebinds its session hooks and decorates through the replacement API', () => {
+    const store = new TestDriftStore()
+    const a = countingProactiveApi()
+    const annotator = new ResultAnnotator({
+      resultAnnotations: true,
+      sourceFor: (cwd: string) => classified(cwd, 'clean'),
+      freshnessFor: () => store,
+      api: a.api,
+    })
+    annotator.register()
+    for (const name of ['session_start', 'session_shutdown'] as const) {
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    annotator.register() // same api: idempotent
+    expect(a.wired.get('session_start')).toHaveLength(1)
+
+    const b = countingProactiveApi()
+    annotator.register(b.api)
+    for (const name of ['session_start', 'session_shutdown'] as const) {
+      expect(b.wired.get(name)).toHaveLength(1)
+      expect(a.wired.get(name)).toHaveLength(1)
+    }
+
+    // Decoration works through the rebound hooks: the replacement session
+    // observes staleness and the next extension-owned output is annotated.
+    b.wired.get('session_start')?.[0]?.({ type: 'session_start' }, { cwd: '/repo' })
+    store.emit(freshnessFor('/repo', 'possibly-stale'))
+    expect(annotator.annotate('status text')).not.toBe('status text')
+
+    annotator.dispose()
+    const c = countingProactiveApi()
+    annotator.register(c.api)
+    expect(c.wired.size).toBe(0)
+  })
+})

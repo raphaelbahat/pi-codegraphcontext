@@ -247,7 +247,7 @@ export interface GuidanceInjectorOptions {
 export class GuidanceInjector {
   private readonly snapshotFor: GuidanceSnapshotProvider | undefined
   private readonly readiness: GuidanceReadinessPredicate
-  private readonly api: GuidanceInjectionApi | undefined
+  private api: GuidanceInjectionApi | undefined
   private readonly onError: ((message: string) => void) | undefined
   /** When true, the delivered card carries the `/skill:cgc-routing` pointer. */
   /** When true, the delivered card carries the `/skill:cgc-routing` pointer. */
@@ -278,27 +278,38 @@ export class GuidanceInjector {
    * Wire the session and injection hooks. Idempotent and fail-open: a broken
    * API never throws out of registration (each hook is also individually
    * guarded). No-op after `dispose()`.
+   *
+   * Session rebind (add-cgc-session-rebind): when `api` is supplied and
+   * differs from the API this injector is wired to (pi re-runs the factory on
+   * every session replacement), adopt it, re-arm the registration flag, and
+   * wire the hooks onto the new API. The same API stays the idempotent no-op.
    */
-  register(): void {
-    if (this.disposed || this.registered) return
+  register(api?: GuidanceInjectionApi): void {
+    if (this.disposed) return
+    if (api !== undefined && api !== this.api) {
+      // Session replacement: adopt the fresh API and re-arm registration.
+      this.api = api
+      this.registered = false
+    }
+    if (this.registered) return
     this.registered = true
-    const api = this.api
-    if (api === undefined) return
+    const target = this.api
+    if (target === undefined) return
     try {
-      api.on('session_start', this.handleSessionStart)
+      target.on('session_start', this.handleSessionStart)
     } catch (error) {
       // Fail-open: extension load must never break on a throwing API, but the
       // contained failure is still recorded (task 2.3).
       this.recordError(`guidance hook registration failed: ${errorMessage(error)}`)
     }
     try {
-      api.on('session_shutdown', this.handleSessionShutdown)
+      target.on('session_shutdown', this.handleSessionShutdown)
     } catch (error) {
       // Fail-open (same rationale), recorded like every other hook body.
       this.recordError(`guidance hook registration failed: ${errorMessage(error)}`)
     }
     try {
-      api.on('before_agent_start', this.handleBeforeAgentStart)
+      target.on('before_agent_start', this.handleBeforeAgentStart)
     } catch (error) {
       // Fail-open (same rationale), recorded like every other hook body.
       this.recordError(`guidance hook registration failed: ${errorMessage(error)}`)
@@ -532,7 +543,7 @@ export interface GuidanceSkillExposureOptions {
  */
 export class GuidanceSkillExposure {
   private readonly enabled: boolean
-  private readonly api: GuidanceSkillDiscoverApi | undefined
+  private api: GuidanceSkillDiscoverApi | undefined
   private readonly skillPaths: readonly string[]
   private readonly onError: ((message: string) => void) | undefined
 
@@ -551,14 +562,26 @@ export class GuidanceSkillExposure {
   /**
    * Wire the discovery hook. Idempotent and fail-open: a broken API never
    * throws out of registration. No-op after `dispose()`.
+   *
+   * Session rebind (add-cgc-session-rebind): when `api` is supplied and
+   * differs from the API this exposure is wired to (pi re-runs the factory on
+   * every session replacement), adopt it, re-arm the registration flag, and
+   * wire the discovery hook onto the new API. The same API stays the
+   * idempotent no-op.
    */
-  register(): void {
-    if (this.disposed || this.registered) return
+  register(api?: GuidanceSkillDiscoverApi): void {
+    if (this.disposed) return
+    if (api !== undefined && api !== this.api) {
+      // Session replacement: adopt the fresh API and re-arm registration.
+      this.api = api
+      this.registered = false
+    }
+    if (this.registered) return
     this.registered = true
-    const api = this.api
-    if (api === undefined) return
+    const target = this.api
+    if (target === undefined) return
     try {
-      api.on('resources_discover', this.handleResourcesDiscover)
+      target.on('resources_discover', this.handleResourcesDiscover)
     } catch (error) {
       // Fail-open: extension load must never break on a throwing API, but the
       // contained failure is recorded.

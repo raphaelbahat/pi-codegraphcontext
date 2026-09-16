@@ -17,6 +17,7 @@ import {
   GATE_EVALUATION_WORK,
   type GateClassifierLike,
   type GateExtensionApi,
+  type GateHookHandler,
   type GateNoticeSink,
   LifecycleGate,
   MAX_GATE_EVALUATION_RETRIES_PER_SESSION,
@@ -1419,5 +1420,70 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
     } finally {
       gate.reset()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Session rebind (add-cgc-session-rebind): pi re-runs the extension factory on
+// every session replacement with a fresh API instance. The gate is a cached
+// singleton, so register() must adopt a different API instance (re-arm and
+// re-wire) while the same API stays the historical idempotent no-op.
+// ---------------------------------------------------------------------------
+
+type CountedHook = { event: 'session_start' | 'session_shutdown'; handler: GateHookHandler }
+
+function countingGateApi(): { wired: CountedHook[]; api: GateExtensionApi } {
+  const wired: CountedHook[] = []
+  const api: GateExtensionApi = {
+    on: (event, handler) => {
+      wired.push({ event, handler })
+      return undefined
+    },
+  }
+  return { wired, api }
+}
+
+describe('LifecycleGate session rebind (add-cgc-session-rebind)', () => {
+  it('rebinds both session hooks onto a replacement API and evaluates there', async () => {
+    const runner = new GateMockRunner()
+    runner.results.set('--version', versionResult())
+    runner.results.set('stats', stats.clean())
+    const cwd = makeWorkspace(true)
+
+    const a = countingGateApi()
+    const gate = new LifecycleGate({
+      runner: runner as unknown as CgcRunner,
+      config: makeConfig(),
+      api: a.api,
+    })
+    gate.register()
+    expect(a.wired.map((w) => w.event).sort()).toEqual(['session_shutdown', 'session_start'])
+
+    // Same-API re-registration is the historical idempotent no-op.
+    gate.register()
+    expect(a.wired).toHaveLength(2)
+
+    // Session replacement: the factory re-runs register() with the fresh API.
+    const b = countingGateApi()
+    gate.register(b.api)
+    expect(b.wired.map((w) => w.event).sort()).toEqual(['session_shutdown', 'session_start'])
+    // The replaced API gained no additional handlers.
+    expect(a.wired).toHaveLength(2)
+
+    // The rebound hooks actually work: a gate evaluation driven through the
+    // replacement session's session_start records the snapshot and wires the
+    // workspace, exactly as a first session would.
+    const sessionStart = b.wired.find((w) => w.event === 'session_start')
+    if (sessionStart === undefined) throw new Error('session_start not registered on the new api')
+    sessionStart.handler({ type: 'session_start' }, { cwd })
+    const outcome = await gate.whenEvaluated(cwd)
+    expect(outcome?.state).toBe('clean')
+    expect(gate.snapshot(cwd)?.state).toBe('clean')
+
+    // A disposed gate stays inert: a rebind attempt wires nothing.
+    gate.dispose()
+    const c = countingGateApi()
+    gate.register(c.api)
+    expect(c.wired).toHaveLength(0)
   })
 })

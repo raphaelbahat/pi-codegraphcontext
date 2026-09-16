@@ -140,7 +140,7 @@ overrides. Relevant keys and their defaults:
 
 | Key | Default | Environment override |
 | --- | --- | --- |
-| `guidance.routingSkill` | `false` | `CGC_GUIDANCE_ROUTING_SKILL` |
+| `guidance.routingSkill` | `true` | `CGC_GUIDANCE_ROUTING_SKILL` |
 | `lifecycle.autoCreate` | `false` | `CGC_LIFECYCLE_AUTO_CREATE` |
 | `lifecycle.syncOnStart` | `true` | `CGC_LIFECYCLE_SYNC_ON_START` |
 | `freshness.autoSync` | `true` | `CGC_FRESHNESS_AUTO_SYNC` |

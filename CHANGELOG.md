@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.4.2...v0.5.0) (2026-09-16)
+
+
+### Features
+
+* /cgc status answers "is this workspace indexed?" with a passive, source-labeled Index line ([90b3dfd](https://github.com/raphaelbahat/pi-codegraphcontext/commit/90b3dfdb109e389eb839b89f334c237a797c3506))
+
 ## [0.4.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.4.1...v0.4.2) (2026-09-16)
 
 

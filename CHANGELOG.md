@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.6.0...v0.6.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* named GateHookHandler type (the pi-lens unknown-return false positive on the interface overloads) + release-publish reworked — workflow_run publishes bot-created releases automatically, env-based tag resolution (zizmor-clean), the already-published guard, and cancel-in-progress: false so a publish is never killed mid-PUT ([47be7d3](https://github.com/raphaelbahat/pi-codegraphcontext/commit/47be7d30c029bee78eca3f3ed261ce7231723e4f))
+
 ## [0.6.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.5.0...v0.6.0) (2026-09-16)
 
 

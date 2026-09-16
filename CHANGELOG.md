@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.4.1...v0.4.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* type the extension-API seams' handler returns void (gate + guidance) — the handlers are fire-and-forget hooks; unknown-return declarations flagged by the pi-lens self-scan ([3a48183](https://github.com/raphaelbahat/pi-codegraphcontext/commit/3a48183aabc0f338866f5af28f7039c90ab1665c))
+
 ## [0.4.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.4.0...v0.4.1) (2026-09-15)
 
 

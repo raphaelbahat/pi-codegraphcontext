@@ -396,9 +396,10 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
   }
 
   // Task 2.4 (add-cgc-agent-routing-guidance): the routing skill (default on,
-  // opt-out). The deep skill ships inside the package (`skills/cgc-routing`)
-  // and is contributed at discovery whenever `guidance.routingSkill` is
-  // enabled — readiness deliberately does NOT gate discovery (pi fires
+  // opt-out). The deep skill ships inside the package (`skills/cgc-routing`),
+  // is model-invocable, AND is user-executable via /skill:cgc-routing. It is
+  // contributed at discovery whenever `guidance.routingSkill` is enabled —
+  // readiness deliberately does NOT gate discovery (pi fires
   // `resources_discover` before the gate records any snapshot: gating there
   // made the skill invisible on every fresh session). Readiness gates the
   // agent-side pointer on the injected card instead, per turn. Fail-open:

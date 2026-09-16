@@ -406,9 +406,9 @@ export class GuidanceInjector {
 
       this.injected = true
       // The routing-skill pointer rides the same per-turn injection so the
-      // agent-facing availability stays readiness-gated (the skill itself is
-      // user-executable via /skill regardless — discovery contributes it
-      // whenever the flag is enabled).
+      // agent-facing availability stays readiness-gated. The skill itself is
+      // model-invocable (discovery contributes it whenever the flag is
+      // enabled) AND user-executable via /skill:cgc-routing.
       const delivery = this.routingSkillPointer
         ? `${GUIDANCE_CARD}\n\nDeeper routing detail: /skill:cgc-routing.`
         : GUIDANCE_CARD

@@ -118,7 +118,7 @@ The status HUD reflects all of this live; no command is needed to see the state.
   [MCP tools documentation](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/MCP_TOOLS.md).
 - **The always-on guideline card** steering tool choice: graph for relationships,
   built-in search for exact strings.
-- **The `cgc-routing` skill** (on by default; opt out with `guidance.routingSkill: false`) with intent-first — user-executable via `/skill:cgc-routing`
+- **The `cgc-routing` skill** (on by default; opt out with `guidance.routingSkill: false`) with intent-first — model-invocable for autonomous routing detail, user-executable via `/skill:cgc-routing`
   tool-choice detail.
 - **The CLI-gap tools** filling the MCP catalog gaps.
 - **The [agent guide](docs/agent-guide.md)** — the deep, intent-first reference the card

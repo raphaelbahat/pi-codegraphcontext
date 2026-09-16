@@ -81,11 +81,11 @@ Rule: The extension SHALL provide a routing skill containing deeper CGC onboardi
 - **WHEN** a session starts with guidance ready
 - **THEN** the agent can consult the routing skill for tool-choice-by-intent, backend caveats, the CGC path sandbox, and indexing basics
 
-#### Scenario: Skill user-executable when enabled
+#### Scenario: Skill model-invocable and user-executable when enabled
 
 - **GIVEN** the routing skill is enabled (the default)
 - **WHEN** skill discovery runs
-- **THEN** the skill is contributed and is user-executable via `/skill:cgc-routing`, regardless of guidance readiness at discovery time
+- **THEN** the skill is contributed regardless of guidance readiness at discovery time, is model-invocable (the agent can pull the deep routing content autonomously), and is user-executable via `/skill:cgc-routing`
 
 #### Scenario: Agent-side availability follows readiness per turn
 

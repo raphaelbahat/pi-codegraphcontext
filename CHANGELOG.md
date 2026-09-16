@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.7.1...v0.7.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* drop the stale gate evaluation of a replaced session — no more post-/resume corrupt warning ([053f1d2](https://github.com/raphaelbahat/pi-codegraphcontext/commit/053f1d21a99de2be3ad07b1156af04c00c7334cb))
+* status Index line renders status only; /cgc config modal gets a framed, padded box ([26b1004](https://github.com/raphaelbahat/pi-codegraphcontext/commit/26b1004828a234ad34e813e20edbb77246a08195))
+
 ## [0.7.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.7.0...v0.7.1) (2026-09-16)
 
 

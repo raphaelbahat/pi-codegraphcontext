@@ -31,7 +31,7 @@ Code-graph answers are only as good as the index behind them. Without a gate, ag
 | **Worktree contexts**    | Optional `isolate` mode maps git worktrees to dedicated CGC contexts (`--context wt-<id>`), with durable identity-verified mappings and fail-closed mismatch handling                                                                |
 | **Output economy**       | CGC tool output is size-capped, secrets are redacted, and oversized results spill to disk with archive IDs instead of flooding the context window                                                                                    |
 | **CLI-gap tools**        | `cgc_bundle_export`, `cgc_context`, and `cgc_doctor` wrap the CGC verbs the MCP catalog does not expose                                                                                                                              |
-| **Agent guidance**       | An always-on routing guideline card (graph-vs-text tool choice) plus an on-by-default (opt-out) `cgc-routing` skill                                                                                                                                   |
+| **Agent guidance**       | An always-on routing guideline card (graph-vs-text tool choice) plus an on-by-default (opt-out) `cgc-routing` skill                                                                                                                  |
 
 Everything is **fail-open**: a guard error is recorded, retried at most once per session,
 and never blocks the agent loop. Detection errors degrade honestly (for example, a
@@ -40,18 +40,14 @@ malformed `.git` pointer simply means "not a worktree") instead of producing wro
 ## Requirements
 
 - **Pi** coding agent (`@earendil-works/pi-coding-agent` is used as a peer dependency).
-- The **`cgc` CLI** (CodeGraphContext, tested against v0.6.x) on `PATH`, or pointed at via
+- The **CodeGraphContext CLI** (`cgc`) installed and set up, available on `PATH`, or pointed at via
   `CGC_EXECUTABLE`. See the
   [CGC indexing guide](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/docs/guides/indexing.md)
   for installing and preparing the CLI.
-- Optional: the **CGC HTTP API** (`cgc api start`, or the extension spawns one on demand
-  on `127.0.0.1`, loopback only) speeds up the session-start indexedness check for
-  non-bundled backends (Neo4j / FalkorDB); see `cgc.api` below. Without it the
-  `cgc list` CLI probe decides instead — behavior is identical, only slower.
 
 ## Installation
 
-1. Install the `cgc` CLI and confirm it works:
+1. Install and setup CodeGraphContext (see the [CodeGraphContext documentation](https://github.com/CodeGraphContext/CodeGraphContext/tree/main/docs/docs/getting-started)):
 
     ```sh
     cgc --version
@@ -211,19 +207,39 @@ notice, never a crashed or blocked session.
 }
 ```
 
-| Section     | Key                                                  | Default                             | What it controls                                                                       |
-| ----------- | ---------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------- |
-| `cgc`       | `executable`                                         | `"cgc"`                             | The CGC binary (name or absolute path)                                                 |
-| `cgc`       | `timeoutMs` / `versionProbeTimeoutMs`                | `30000` / `10000`                   | Per-command and version-probe time budgets                                             |
-| `cgc`       | `api.enabled` / `api.port`                           | `true` / `8000`                     | CGC HTTP API probe chain for marker-less indexedness (falls back to `cgc list`)        |
-| `lifecycle` | `autoCreate`                                         | `false`                             | Index a workspace automatically when none exists (consent gate)                        |
-| `lifecycle` | `syncOnStart`                                        | `true`                              | Sync drift detected at session start                                                   |
-| `worktree`  | `mode`                                               | `"off"`                             | `"isolate"` maps each git worktree to its own CGC context                              |
-| `proactive` | `sessionNote` / `driftSteers` / `resultAnnotations`  | `true` / `false` / `false`          | Proactive surfaces: the one-shot session note, drift steering, tool-result annotations |
-| `freshness` | `watch` / `autoSync` / `maxSyncsPerSession`          | `false` / `true` / `2`              | File watching, background syncing, and its per-session bound                           |
-| `output`    | `maxBytes` / `spillToTemp` / `redactSecrets` / `gcf` | `16384` / `true` / `true` / `false` | Output budget, spill-to-disk, secret redaction, graph-context-format output            |
-| `tools`     | `cliGap.enabled`                                     | `true`                              | Registers the three CLI-gap tools (`cgc_bundle_export`, `cgc_context`, `cgc_doctor`)   |
-| `guidance`  | `routingSkill`                                       | `true`                             | Offers the `cgc-routing` skill to the agent (opt out with `false`)                                     |
+| Section     | Key                                                  | Default                             | What it controls                                                                           |
+| ----------- | ---------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------ |
+| `cgc`       | `executable`                                         | `"cgc"`                             | The CGC binary (name or absolute path)                                                     |
+| `cgc`       | `timeoutMs` / `versionProbeTimeoutMs`                | `30000` / `10000`                   | Per-command and version-probe time budgets                                                 |
+| `cgc`       | `api.enabled` / `api.port`                           | `true` / `8000`                     | Use the CGC HTTP API for the indexedness check (falls back to `cgc list`) — see "How the status check works" |
+| `lifecycle` | `autoCreate`                                         | `false`                             | Index a workspace automatically when none exists (consent gate)                            |
+| `lifecycle` | `syncOnStart`                                        | `true`                              | Sync drift detected at session start                                                       |
+| `worktree`  | `mode`                                               | `"off"`                             | `"isolate"` maps each git worktree to its own CGC context                                  |
+| `proactive` | `sessionNote` / `driftSteers` / `resultAnnotations`  | `true` / `false` / `false`          | Proactive surfaces: the one-shot session note, drift steering, tool-result annotations     |
+| `freshness` | `watch` / `autoSync` / `maxSyncsPerSession`          | `false` / `true` / `2`              | File watching, background syncing, and its per-session bound                               |
+| `output`    | `maxBytes` / `spillToTemp` / `redactSecrets` / `gcf` | `16384` / `true` / `true` / `false` | Output budget, spill-to-disk, secret redaction, graph-context-format output                |
+| `tools`     | `cliGap.enabled`                                     | `true`                              | Registers the three CLI-gap tools (`cgc_bundle_export`, `cgc_context`, `cgc_doctor`)       |
+| `guidance`  | `routingSkill`                                       | `true`                              | Offers the `cgc-routing` skill to the agent (opt out with `false`)                         |
+
+### How the status check works
+
+The extension answers "is this workspace indexed?" on every session start and in
+`/cgc status`. How it answers depends on how CGC stores the index for your backend:
+
+- **Bundled backend (Kùzu)**: CGC keeps the index in a `.codegraphcontext/` directory
+  inside the workspace — its presence is a fast, definitive "indexed" signal.
+- **Server backends (Neo4j, FalkorDB)**: the graph lives on the server, so there is no
+  local directory to check — these are the **marker-less** backends. Here the extension
+  asks CGC itself, in this order:
+  1. The **CGC HTTP API** (`cgc.api.enabled`, default on): a one-shot Cypher lookup
+     against a loopback-only API — the extension spawns one on demand if none is
+     running. Fastest; uses `cgc.api.port`.
+  2. The **`cgc list` CLI probe**: lists the registered repositories and matches the
+     workspace path. Slower (a fresh CLI process), identical answer.
+
+Both are read-only, bounded, and fail-open: if neither can answer, the extension says
+so honestly instead of guessing. The API is optional — without it (or with
+`cgc.api.enabled: false`) the CLI probe decides; the only cost is time.
 
 ### Environment Variables
 
@@ -270,5 +286,6 @@ bun install
 bun test          # ~935 tests across 32 files
 bunx tsc --noEmit # type check
 ```
+
 The extension is fully covered by the per-capability specs under
 `openspec/specs/` and the archived change history under `openspec/changes/archive/`.

@@ -324,6 +324,10 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
         isInFlight: (cwd: string) => cachedRunner?.isInFlight(cwd) ?? false,
       },
       runner: cachedRunner,
+      // The dedicated MAINTENANCE budget (config `cgc.maintenanceTimeoutMs`):
+      // the action verbs' background index/sync runs are maintenance-sized
+      // (~60 s on a real workspace), unlike the bounded read-only probes.
+      maintenanceTimeoutMs: getConfig().config.cgc.maintenanceTimeoutMs,
       // feat/status-index-info: the API registry client for the status view's
       // passive indexedness answer — the same probe seam the gate and the
       // classifier receive (undefined when the API is disabled or construction

@@ -75,6 +75,7 @@ export type SettingsKeyKind = 'boolean' | 'enum' | 'number' | 'string'
 export const SETTINGS_KEY_KINDS: Readonly<Record<ConfigKey, SettingsKeyKind>> = Object.freeze({
   'cgc.executable': 'string',
   'cgc.timeoutMs': 'number',
+  'cgc.maintenanceTimeoutMs': 'number',
   'cgc.versionProbeTimeoutMs': 'number',
   'cgc.api.enabled': 'boolean',
   'cgc.api.port': 'number',
@@ -98,6 +99,7 @@ export const SETTINGS_KEY_KINDS: Readonly<Record<ConfigKey, SettingsKeyKind>> = 
 const NUMBER_VALIDATORS: Readonly<Partial<Record<ConfigKey, (raw: unknown) => ValueRule<number>>>> =
   Object.freeze({
     'cgc.timeoutMs': validateTimeoutMsValue,
+    'cgc.maintenanceTimeoutMs': validateTimeoutMsValue,
     'cgc.versionProbeTimeoutMs': validateTimeoutMsValue,
     'cgc.api.port': validatePortValue,
     'output.maxBytes': validateMaxBytesValue,
@@ -202,6 +204,7 @@ const CONFIG_VALUE_GETTERS: Readonly<
 > = Object.freeze({
   'cgc.executable': (c) => c.cgc.executable,
   'cgc.timeoutMs': (c) => c.cgc.timeoutMs,
+  'cgc.maintenanceTimeoutMs': (c) => c.cgc.maintenanceTimeoutMs,
   'cgc.versionProbeTimeoutMs': (c) => c.cgc.versionProbeTimeoutMs,
   'cgc.api.enabled': (c) => c.cgc.api.enabled,
   'cgc.api.port': (c) => c.cgc.api.port,

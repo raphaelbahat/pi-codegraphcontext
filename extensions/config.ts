@@ -31,6 +31,15 @@ export interface CgcConfig {
   executable: string
   /** Default time budget for cgc invocations, in milliseconds. */
   timeoutMs: number
+  /**
+   * Time budget for MAINTENANCE invocations, in milliseconds (default
+   * 600000): the `/cgc index` and `/cgc sync` background runs. A real
+   * incremental `cgc index .` legitimately takes about a minute on a
+   * non-trivial workspace, so the probe-sized `timeoutMs` above would
+   * terminate it every time. The read-only probes (status / classifier /
+   * api-registry / version) deliberately keep `timeoutMs`.
+   */
+  maintenanceTimeoutMs: number
   /** Tighter time budget for the cached version probe, in milliseconds. */
   versionProbeTimeoutMs: number
   /** CGC HTTP API settings for the registry-backed indexedness probe chain. */
@@ -172,6 +181,7 @@ export type ConfigSource = 'default' | 'config-file' | 'env'
 export type ConfigKey =
   | 'cgc.executable'
   | 'cgc.timeoutMs'
+  | 'cgc.maintenanceTimeoutMs'
   | 'cgc.versionProbeTimeoutMs'
   | 'cgc.api.enabled'
   | 'cgc.api.port'
@@ -211,6 +221,7 @@ export const DEFAULT_CONFIG: ExtensionConfig = {
   cgc: {
     executable: 'cgc',
     timeoutMs: 30_000,
+    maintenanceTimeoutMs: 600_000,
     versionProbeTimeoutMs: 10_000,
     api: {
       enabled: true,
@@ -254,6 +265,7 @@ export const DEFAULT_CONFIG: ExtensionConfig = {
 export const CONFIG_ENV_VARS: Record<ConfigKey, string> = {
   'cgc.executable': 'CGC_EXECUTABLE',
   'cgc.timeoutMs': 'CGC_TIMEOUT_MS',
+  'cgc.maintenanceTimeoutMs': 'CGC_MAINTENANCE_TIMEOUT_MS',
   'cgc.versionProbeTimeoutMs': 'CGC_VERSION_PROBE_TIMEOUT_MS',
   'cgc.api.enabled': 'CGC_API_ENABLED',
   'cgc.api.port': 'CGC_API_PORT',
@@ -466,6 +478,9 @@ function readConfigFile(
     if (isPlainObject(cgc)) {
       if (cgc.executable !== undefined) values['cgc.executable'] = cgc.executable
       if (cgc.timeoutMs !== undefined) values['cgc.timeoutMs'] = cgc.timeoutMs
+      if (cgc.maintenanceTimeoutMs !== undefined) {
+        values['cgc.maintenanceTimeoutMs'] = cgc.maintenanceTimeoutMs
+      }
       if (cgc.versionProbeTimeoutMs !== undefined) {
         values['cgc.versionProbeTimeoutMs'] = cgc.versionProbeTimeoutMs
       }
@@ -611,6 +626,14 @@ function applyFileLayer(
         const timeoutMs = parseTimeoutMs(raw, key, warnings)
         if (timeoutMs !== undefined) {
           config.cgc.timeoutMs = timeoutMs
+          sources[key] = 'config-file'
+        }
+        break
+      }
+      case 'cgc.maintenanceTimeoutMs': {
+        const timeoutMs = parseTimeoutMs(raw, key, warnings)
+        if (timeoutMs !== undefined) {
+          config.cgc.maintenanceTimeoutMs = timeoutMs
           sources[key] = 'config-file'
         }
         break
@@ -791,10 +814,12 @@ function applyEnvLayer(
         break
       }
       case 'cgc.timeoutMs':
+      case 'cgc.maintenanceTimeoutMs':
       case 'cgc.versionProbeTimeoutMs': {
         const timeoutMs = parseTimeoutMs(raw, key, warnings)
         if (timeoutMs !== undefined) {
           if (key === 'cgc.timeoutMs') config.cgc.timeoutMs = timeoutMs
+          else if (key === 'cgc.maintenanceTimeoutMs') config.cgc.maintenanceTimeoutMs = timeoutMs
           else config.cgc.versionProbeTimeoutMs = timeoutMs
           sources[key] = 'env'
         }

@@ -218,6 +218,10 @@ describe('validateSettingValue (task 1.1/D4: the loader rules, exactly)', () => 
       ok: true,
       value: 1_000,
     })
+    expect(validateSettingValue('cgc.maintenanceTimeoutMs', '600000')).toEqual({
+      ok: true,
+      value: 600_000,
+    })
     const invalid = validateSettingValue('cgc.timeoutMs', '0')
     expect(invalid.ok).toBe(false)
     if (!invalid.ok) expect(invalid.error).toBe('expected a positive number of milliseconds')

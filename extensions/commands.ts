@@ -39,7 +39,7 @@ import { workspaceListedInRegistryOutput } from './classifier'
 import type { LifecycleConfig } from './config'
 import { DEFAULT_SYNC_ARGS } from './drift'
 import type { LifecycleActionInput, LifecycleSnapshot } from './lifecycle-state'
-import type { CgcCommandResult, CgcRunner } from './runner'
+import type { CgcCommandResult, CgcRunner, CgcRunOptions } from './runner'
 import { openCgcSettings } from './settings-modal'
 import { isWorkspaceIndexed } from './workspace'
 import type { WorktreeIsolationBlock } from './worktree'
@@ -167,6 +167,18 @@ export interface CgcCommandDependencies {
    * the possibly-unconstructed cached runner under strict optional types).
    */
   runner?: CgcRunner | undefined
+  /**
+   * Time budget, in milliseconds, for MAINTENANCE invocations started by the
+   * action verbs (`/cgc index` create/incremental/rebuild and `/cgc sync`) —
+   * config `cgc.maintenanceTimeoutMs`. A maintenance run is not a probe: a
+   * real incremental `cgc index .` can take about a minute on a non-trivial
+   * workspace, so it must not inherit the probe-sized `cgc.timeoutMs` (which
+   * would terminate it every time, recording a `timeout` outcome). Absent →
+   * the runner's configured default budget applies (the pre-existing
+   * behavior). The read-only probes and `/cgc doctor`/`/cgc report`
+   * deliberately do NOT use this budget.
+   */
+  maintenanceTimeoutMs?: number
   /**
    * Resolved lifecycle config; `autoCreate` is the change-1 auto-create
    * consent gate the creation path reuses (design D2). Absent → treated as
@@ -987,7 +999,13 @@ function startIndexWork(
 
   let started: Promise<CgcCommandResult>
   try {
-    started = runner.run(ctx.cwd, { args })
+    // The MAINTENANCE budget: index/sync are maintenance-sized work, not
+    // probes. Absent → the runner's default (`cgc.timeoutMs`) still applies.
+    const runOptions: CgcRunOptions = { args }
+    if (deps.maintenanceTimeoutMs !== undefined) {
+      runOptions.timeoutMs = deps.maintenanceTimeoutMs
+    }
+    started = runner.run(ctx.cwd, runOptions)
   } catch (error) {
     notify(
       ctx,

@@ -54,7 +54,7 @@ import {
   stripControlSequences,
   truncationMarker,
 } from './output-policy'
-import { type CgcCommandResult, CgcRunner } from './runner'
+import { type CgcCommandResult, CgcRunner, type CgcRunOptions } from './runner'
 import type { WorktreeMapResolutionStatus } from './worktree'
 
 // ---------------------------------------------------------------------------
@@ -247,6 +247,8 @@ function makeStateSurface(
 interface FakeRun {
   cwd: string
   args: string[]
+  /** The per-invocation time budget passed to the runner, when any was. */
+  timeoutMs: number | undefined
   /** Resolve the fake spawn with a result (OK / BUSY / COMMAND_FAILED / …). */
   settle: (result: CgcCommandResult) => void
 }
@@ -271,7 +273,7 @@ function makeFakeRunner(): {
     isInFlight(cwd: string): boolean {
       return inflight.has(cwd)
     },
-    run(cwd: string, options: { args: readonly string[] }): Promise<CgcCommandResult> {
+    run(cwd: string, options: CgcRunOptions): Promise<CgcCommandResult> {
       if (options.args[0] === 'list' && listResult === null) {
         return Promise.resolve(makeResult({ stdout: '', argv: ['list'] }))
       }
@@ -279,7 +281,7 @@ function makeFakeRunner(): {
       const promise = new Promise<CgcCommandResult>((resolve) => {
         settle = resolve
       })
-      runs.push({ cwd, args: [...options.args], settle })
+      runs.push({ cwd, args: [...options.args], timeoutMs: options.timeoutMs, settle })
       return promise
     },
   }
@@ -1369,6 +1371,76 @@ describe('/cgc index (task 2.2)', () => {
     expect(indexStartedNotice('/ws', ['index', '.', '--force'], 'rebuild')).toContain('replaced')
     expect(indexCreationDeclinedNotice('/ws')).toContain('/ws')
     expect(indexCreationDeclinedNotice('/ws')).toContain('untouched')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Maintenance time budget (config cgc.maintenanceTimeoutMs)
+// ---------------------------------------------------------------------------
+
+describe('/cgc index and /cgc sync carry the maintenance time budget', () => {
+  it('passes the configured maintenance budget to the incremental index spawn', async () => {
+    const dir = makeIndexedWorkspace()
+    try {
+      const { runner, runs } = makeFakeRunner()
+      const { ctx } = makeContext(undefined, dir)
+      const deps: CgcCommandDependencies = { runner, maintenanceTimeoutMs: 600_000 }
+
+      await handleCgcInvocation('index', ctx, deps)
+
+      expect(runs).toHaveLength(1)
+      expect(runs[0]?.args).toEqual(['index', '.'])
+      expect(runs[0]?.timeoutMs).toBe(600_000)
+      runs[0]?.settle(makeResult())
+      await Promise.resolve()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('passes the configured maintenance budget to the sync spawn', async () => {
+    const dir = makeIndexedWorkspace()
+    try {
+      const { runner, runs } = makeFakeRunner()
+      const { ctx } = makeContext(undefined, dir)
+      const deps: CgcCommandDependencies = { runner, maintenanceTimeoutMs: 600_000 }
+
+      await handleCgcInvocation('sync', ctx, deps)
+
+      expect(runs).toHaveLength(1)
+      expect(runs[0]?.args).toEqual(['index', '.'])
+      expect(runs[0]?.timeoutMs).toBe(600_000)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('passes the configured maintenance budget to the force-rebuild spawn', async () => {
+    const { runner, runs } = makeFakeRunner()
+    const { ctx } = makeContext()
+    const deps: CgcCommandDependencies = { runner, maintenanceTimeoutMs: 600_000 }
+
+    await handleCgcInvocation('index --force', ctx, deps)
+
+    expect(runs).toHaveLength(1)
+    expect(runs[0]?.args).toEqual(['index', '.', '--force'])
+    expect(runs[0]?.timeoutMs).toBe(600_000)
+  })
+
+  it('omits the budget when the dependency is absent (the runner default applies)', async () => {
+    const dir = makeIndexedWorkspace()
+    try {
+      const { runner, runs } = makeFakeRunner()
+      const { ctx } = makeContext(undefined, dir)
+      const deps: CgcCommandDependencies = { runner }
+
+      await handleCgcInvocation('sync', ctx, deps)
+
+      expect(runs).toHaveLength(1)
+      expect(runs[0]?.timeoutMs).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

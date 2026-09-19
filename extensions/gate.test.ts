@@ -91,6 +91,7 @@ function makeConfig(
     cgc: {
       executable: 'cgc',
       timeoutMs: 30_000,
+      maintenanceTimeoutMs: 600_000,
       versionProbeTimeoutMs: 10_000,
       api: { enabled: true, port: 8_000 },
     },
@@ -660,6 +661,7 @@ describe('LifecycleGate task 3.3 audit fills (probe budgets, dispose, teardown)'
         cgc: {
           executable: 'cgc',
           timeoutMs: 1_234,
+          maintenanceTimeoutMs: 600_000,
           versionProbeTimeoutMs: 5_678,
           api: { enabled: true, port: 8_000 },
         },
@@ -943,6 +945,7 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
       cgc: {
         executable: 'cgc',
         timeoutMs: 30_000,
+        maintenanceTimeoutMs: 600_000,
         versionProbeTimeoutMs: 10_000,
         api: { enabled: true, port: 8_000 },
       },
@@ -1043,6 +1046,7 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
         cgc: {
           executable: 'cgc',
           timeoutMs: 30_000,
+          maintenanceTimeoutMs: 600_000,
           versionProbeTimeoutMs: 10_000,
           api: { enabled: true, port: 8_000 },
         },
@@ -1265,6 +1269,7 @@ describe('LifecycleGate worktree isolation wiring (task 2.2: carry the mapped --
         cgc: {
           executable: 'cgc',
           timeoutMs: 30_000,
+          maintenanceTimeoutMs: 600_000,
           versionProbeTimeoutMs: 10_000,
           api: { enabled: true, port: 8_000 },
         },

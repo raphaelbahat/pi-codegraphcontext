@@ -57,6 +57,7 @@ describe('loadConfig', () => {
     expect(result.config.cgc.executable).toBe('cgc')
     expect(result.config.cgc.timeoutMs).toBe(30_000)
     expect(result.config.cgc.versionProbeTimeoutMs).toBe(10_000)
+    expect(result.config.cgc.maintenanceTimeoutMs).toBe(600_000)
     expect(result.config.cgc.api.enabled).toBe(true)
     expect(result.config.cgc.api.port).toBe(8_000)
     expect(result.config.lifecycle.autoCreate).toBe(false)
@@ -119,6 +120,66 @@ describe('loadConfig', () => {
     expect(result.config.cgc.timeoutMs).toBe(30_000)
     expect(result.sources['cgc.versionProbeTimeoutMs']).toBe('env')
     expect(result.sources['cgc.timeoutMs']).toBe('default')
+  })
+
+  it('supports the maintenance-timeout override independently', () => {
+    const defaults = loadConfig({
+      env: cleanEnv(),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(defaults.config.cgc.maintenanceTimeoutMs).toBe(600_000)
+    expect(defaults.sources['cgc.maintenanceTimeoutMs']).toBe('default')
+
+    const fromEnv = loadConfig({
+      env: cleanEnv(envWith({ 'cgc.maintenanceTimeoutMs': '900000' })),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(fromEnv.config.cgc.maintenanceTimeoutMs).toBe(900_000)
+    expect(fromEnv.config.cgc.timeoutMs).toBe(30_000)
+    expect(fromEnv.sources['cgc.maintenanceTimeoutMs']).toBe('env')
+    expect(fromEnv.sources['cgc.timeoutMs']).toBe('default')
+  })
+
+  it('falls back to the default maintenance timeout on invalid values', () => {
+    for (const bad of ['0', '-5', 'abc', 'Infinity']) {
+      const result = loadConfig({
+        env: cleanEnv(envWith({ 'cgc.maintenanceTimeoutMs': bad })),
+        cwd: '/nonexistent',
+        homeDir: '/nonexistent',
+      })
+      expect(result.config.cgc.maintenanceTimeoutMs).toBe(600_000)
+      expect(result.warnings.join('\n')).toContain('cgc.maintenanceTimeoutMs')
+    }
+  })
+
+  it('reads cgc.maintenanceTimeoutMs from config files with env precedence', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cgc-cfg-maint-home-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'cgc-cfg-maint-proj-'))
+    try {
+      mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+      writeFileSync(
+        join(home, '.pi', 'agent', 'cgc.json'),
+        JSON.stringify({ cgc: { maintenanceTimeoutMs: 120_000 } }),
+      )
+
+      const fromFile = loadConfig({ env: cleanEnv(), cwd, homeDir: home })
+      expect(fromFile.config.cgc.maintenanceTimeoutMs).toBe(120_000)
+      expect(fromFile.sources['cgc.maintenanceTimeoutMs']).toBe('config-file')
+      expect(fromFile.warnings).toEqual([])
+
+      const fromEnv = loadConfig({
+        env: cleanEnv(envWith({ 'cgc.maintenanceTimeoutMs': '45000' })),
+        cwd,
+        homeDir: home,
+      })
+      expect(fromEnv.config.cgc.maintenanceTimeoutMs).toBe(45_000)
+      expect(fromEnv.sources['cgc.maintenanceTimeoutMs']).toBe('env')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
   })
 
   it('overrides worktree.mode via environment and falls back on invalid values', () => {

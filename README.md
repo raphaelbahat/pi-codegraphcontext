@@ -135,6 +135,7 @@ The modal degrades fail-open: overlay `ctx.ui.custom` → non-overlay `ctx.ui.cu
     "cgc": {
         "executable": "cgc",
         "timeoutMs": 30000,
+        "maintenanceTimeoutMs": 600000,
         "versionProbeTimeoutMs": 10000,
         "api": {
             "enabled": true,
@@ -178,7 +179,8 @@ The modal degrades fail-open: overlay `ctx.ui.custom` → non-overlay `ctx.ui.cu
 | Section     | Key                                                  | Default                             | What it controls                                                                                                                                          |
 | ----------- | ---------------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cgc`       | `executable`                                         | `"cgc"`                             | The CGC binary (name or absolute path)                                                                                                                    |
-| `cgc`       | `timeoutMs` / `versionProbeTimeoutMs`                | `30000` / `10000`                   | Per-command and version-probe time budgets                                                                                                                |
+| `cgc`       | `timeoutMs` / `versionProbeTimeoutMs`                | `30000` / `10000`                   | Per-command and version-probe budgets (probes, `/cgc doctor`, `/cgc report`)                                                                              |
+| `cgc`       | `maintenanceTimeoutMs`                               | `600000`                            | Budget for background maintenance runs (`/cgc index`, `/cgc sync`)                                                                                        |
 | `cgc`       | `api.enabled` / `api.port`                           | `true` / `8000`                     | Use the CGC HTTP API for the indexedness check (falls back to `cgc list`). Refer to the [How the Status Check Works](#how-the-status-check-works) section |
 | `lifecycle` | `autoCreate`                                         | `false`                             | Index a workspace automatically when none exists (consent gate)                                                                                           |
 | `lifecycle` | `syncOnStart`                                        | `true`                              | Sync drift detected at session start                                                                                                                      |
@@ -208,6 +210,7 @@ Booleans accept `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`.
 | Variable                                                                                                     | Overrides                                        |
 | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
 | `CGC_EXECUTABLE`                                                                                             | `cgc.executable`                                 |
+| `CGC_TIMEOUT_MS` / `CGC_MAINTENANCE_TIMEOUT_MS` / `CGC_VERSION_PROBE_TIMEOUT_MS`                            | `cgc` time budgets                                |
 | `CGC_API_ENABLED` / `CGC_API_PORT`                                                                           | `cgc.api.*`                                      |
 | `CGC_LIFECYCLE_AUTO_CREATE` / `CGC_LIFECYCLE_SYNC_ON_START`                                                  | `lifecycle.*`                                    |
 | `CGC_WORKTREE_MODE`                                                                                          | `worktree.mode`                                  |

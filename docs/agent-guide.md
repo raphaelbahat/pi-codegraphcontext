@@ -213,6 +213,7 @@ warning and fall back to the lower layer.
 | --- | --- | --- | --- |
 | `cgc.executable` | `cgc` | `CGC_EXECUTABLE` | Binary to spawn (PATH-resolved unless absolute). |
 | `cgc.timeoutMs` | `30000` | `CGC_TIMEOUT_MS` | Time budget for cgc invocations. |
+| `cgc.maintenanceTimeoutMs` | `600000` | `CGC_MAINTENANCE_TIMEOUT_MS` | Time budget for the background `/cgc index` and `/cgc sync` maintenance runs. |
 | `cgc.versionProbeTimeoutMs` | `10000` | `CGC_VERSION_PROBE_TIMEOUT_MS` | Time budget for the cached version probe. |
 | `cgc.api.enabled` | `true` | `CGC_API_ENABLED` | Use the CGC HTTP API for the marker-absent indexedness probe (falls back to `cgc list`); `false` restores the CLI-only behavior. |
 | `cgc.api.port` | `8000` | `CGC_API_PORT` | Port the CGC API server is expected on / spawned on (loopback only). |

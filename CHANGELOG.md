@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.8.1...v0.8.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* dedicated cgc.maintenanceTimeoutMs budget for /cgc index and /cgc sync background runs ([20d7dc0](https://github.com/raphaelbahat/pi-codegraphcontext/commit/20d7dc0a04c19d48fe1d74d84f44c2619c7c4cb2))
+
 ## [0.8.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.8.0...v0.8.1) (2026-09-19)
 
 

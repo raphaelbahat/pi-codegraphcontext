@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.8.0...v0.8.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* /cgc index and /cgc sync resolve indexedness through the registry-backed chain (snapshot → marker → API point lookup → cgc list) — the marker-only check misclassified marker-less (Neo4j/FalkorDB) workspaces as unindexed; unknown maps to the conservative decline ([7f4bec9](https://github.com/raphaelbahat/pi-codegraphcontext/commit/7f4bec9330cac6e2cd579c699f3fb88bcde169e7))
+
 ## [0.8.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.7.2...v0.8.0) (2026-09-16)
 
 

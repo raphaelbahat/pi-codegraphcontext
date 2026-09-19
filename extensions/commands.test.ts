@@ -252,14 +252,29 @@ interface FakeRun {
 }
 
 /** A controllable stand-in for {@link CgcRunner} (run returns a settle-able promise). */
-function makeFakeRunner(): { runner: CgcRunner; runs: FakeRun[]; inflight: Set<string> } {
+function makeFakeRunner(): {
+  runner: CgcRunner
+  runs: FakeRun[]
+  inflight: Set<string>
+  /** When set, a `list` probe pushes an unresolved run for the test to settle. */
+  set listResult(result: CgcCommandResult | null)
+} {
   const runs: FakeRun[] = []
   const inflight = new Set<string>()
+  // The registry probe (`cgc list`, added by the marker-less indexedness chain)
+  // auto-settles as "not listed" and stays OUT of `runs` — the verb tests'
+  // first manual settle remains their verb's run. Registry-chain tests opt in
+  // by setting `listResult`, which pushes the probe unresolved for manual
+  // settling.
+  let listResult: CgcCommandResult | null = null
   const runner = {
     isInFlight(cwd: string): boolean {
       return inflight.has(cwd)
     },
     run(cwd: string, options: { args: readonly string[] }): Promise<CgcCommandResult> {
+      if (options.args[0] === 'list' && listResult === null) {
+        return Promise.resolve(makeResult({ stdout: '', argv: ['list'] }))
+      }
       let settle: (result: CgcCommandResult) => void = () => {}
       const promise = new Promise<CgcCommandResult>((resolve) => {
         settle = resolve
@@ -268,7 +283,14 @@ function makeFakeRunner(): { runner: CgcRunner; runs: FakeRun[]; inflight: Set<s
       return promise
     },
   }
-  return { runner: runner as unknown as CgcRunner, runs, inflight }
+  return {
+    runner: runner as unknown as CgcRunner,
+    runs,
+    inflight,
+    set listResult(result: CgcCommandResult | null) {
+      listResult = result
+    },
+  }
 }
 
 function makeResult(overrides: Partial<CgcCommandResult> = {}): CgcCommandResult {
@@ -851,7 +873,9 @@ describe('/cgc status Index line (feat/status-index-info)', () => {
   })
 
   it('falls back to the bounded cgc list probe when the API registry is inconclusive (listed)', async () => {
-    const { runner, runs } = makeFakeRunner()
+    const fake = makeFakeRunner()
+    const { runner, runs } = fake
+    fake.listResult = makeResult({ stdout: '', argv: ['list'] })
     const probe = makeApiProbe('failed')
     const { state } = makeStateSurface({ snapshot: () => null })
     const deps: CgcCommandDependencies = { state, runner, apiRegistry: probe.apiRegistry }
@@ -2180,11 +2204,15 @@ describe('fail-closed worktree tool-use block (task 2.3)', () => {
     expect(runs).toHaveLength(1)
     expect(runs[0]?.args).toEqual(['index', '.'])
 
-    // Non-worktree: NOT blocked.
+    // Non-worktree: NOT blocked. The runner answers the `list` probe
+    // immediately (not listed) so the consent gate resolves synchronously.
     const runs2: { cwd: string; args: readonly string[] }[] = []
     const runner2 = {
       isInFlight: () => false,
       run(cwd: string, options: { args: readonly string[] }): Promise<CgcCommandResult> {
+        if (options.args[0] === 'list') {
+          return Promise.resolve(makeResult({ stdout: '', argv: ['list'] }))
+        }
         runs2.push({ cwd, args: [...options.args] })
         return Promise.resolve(makeResult())
       },

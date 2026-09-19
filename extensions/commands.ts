@@ -395,10 +395,36 @@ export async function resolveStatusIndexLine(
   const runner = deps.runner
   if (runner !== undefined) {
     try {
-      const result = await runner.run(cwd, {
-        args: ['list'],
-        timeoutMs: STATUS_INDEX_PROBE_TIMEOUT_MS,
-      })
+      // Defensive race: the runner's own timeoutMs should bound every spawn,
+      // but a runner implementation (or a test stub) that never resolves must
+      // not hang the command — the timer resolves an inconclusive result and
+      // is unref'd so it never holds the process open.
+      const result = await Promise.race([
+        runner.run(cwd, {
+          args: ['list'],
+          timeoutMs: STATUS_INDEX_PROBE_TIMEOUT_MS,
+        }),
+        new Promise<Awaited<ReturnType<CgcRunner['run']>>>((resolve) => {
+          const timer = setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                code: 'COMMAND_FAILED',
+                message: `index registry probe timed out after ${STATUS_INDEX_PROBE_TIMEOUT_MS}ms`,
+                exitCode: null,
+                signal: null,
+                stdout: '',
+                stderr: '',
+                truncated: false,
+                durationMs: STATUS_INDEX_PROBE_TIMEOUT_MS,
+                argv: ['list'],
+                cwd,
+              }),
+            STATUS_INDEX_PROBE_TIMEOUT_MS,
+          )
+          timer.unref?.()
+        }),
+      ])
       if (result.ok) {
         const listed = workspaceListedInRegistryOutput(cwd, result.stdout)
         return {
@@ -1088,7 +1114,7 @@ async function handleIndexCommand(
   // the change-1 auto-create opt-in (design D2); indexed workspaces run the
   // same incremental `cgc index .` freely — it is the non-destructive
   // reconcile the CLI performs by default.
-  const indexed = isWorkspaceIndexed(ctx.cwd)
+  const indexed = await resolveGateIndexedness(ctx, deps)
   if (!indexed && deps.lifecycle?.autoCreate !== true) {
     notify(ctx, indexCreationDeclinedNotice(ctx.cwd), 'info')
     try {
@@ -1134,6 +1160,23 @@ async function handleIndexCommand(
  * `drift-sync-started`, so `/cgc status` shows activity "syncing" while it
  * runs.
  */
+/**
+ * The indexedness answer the `/cgc index` and `/cgc sync` consent gates use:
+ * the SAME chain the status view renders (snapshot when available → the
+ * filesystem marker → the CGC HTTP API point lookup → the `cgc list` CLI
+ * probe), reduced to a boolean. `unknown` (every probe unavailable or
+ * inconclusive) maps to `false` — the conservative decline: no sync or
+ * creation is triggered on an unresolved workspace, and the auto-create
+ * consent gate still decides any creation exactly as before.
+ */
+async function resolveGateIndexedness(
+  ctx: ExtensionCommandContext,
+  deps: CgcCommandDependencies,
+): Promise<boolean> {
+  const line = await resolveStatusIndexLine(ctx.cwd, deps.state?.snapshot?.(ctx.cwd) ?? null, deps)
+  return line.value === 'indexed' || line.value === 'likely-indexed'
+}
+
 async function handleSyncCommand(
   ctx: ExtensionCommandContext,
   rest: string,
@@ -1155,7 +1198,7 @@ async function handleSyncCommand(
   // unindexed workspace would be an index creation, which is opt-in
   // (config `lifecycle.autoCreate`) — a closed gate declines with a notice
   // and spawns nothing.
-  const indexed = isWorkspaceIndexed(ctx.cwd)
+  const indexed = await resolveGateIndexedness(ctx, deps)
   if (!indexed && deps.lifecycle?.autoCreate !== true) {
     notify(ctx, syncDeclinedNotice(ctx.cwd), 'info')
     try {

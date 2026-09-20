@@ -354,6 +354,33 @@ describe('CgcRunner', () => {
     }
   })
 
+  it('pins ENABLE_AUTO_WATCH=false and overrides any caller-set value, inheriting other vars unchanged', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const runner = new CgcRunner({ executable: BUN })
+      const script =
+        'process.stdout.write([process.env.ENABLE_AUTO_WATCH ?? "", process.env.CGC_PIN_PROBE ?? ""].join("|"))'
+
+      // Default: the pin applies even when the caller's env is empty.
+      const pinned = await runner.run(workspace, {
+        args: ['-e', script],
+        env: envWith({ CGC_PIN_PROBE: 'probe' }),
+      })
+      expect(pinned.ok).toBe(true)
+      expect(pinned.stdout).toBe('false|probe')
+
+      // A caller-provided ENABLE_AUTO_WATCH=true is overridden by the pin.
+      const overridden = await runner.run(workspace, {
+        args: ['-e', script],
+        env: envWith({ ENABLE_AUTO_WATCH: 'true', CGC_PIN_PROBE: 'probe' }),
+      })
+      expect(overridden.ok).toBe(true)
+      expect(overridden.stdout).toBe('false|probe')
+    } finally {
+      cleanupWorkspace(workspace)
+    }
+  })
+
   it('applies the output policy to stderr too (uniform before any consumer)', async () => {
     const workspace = makeWorkspace()
     try {

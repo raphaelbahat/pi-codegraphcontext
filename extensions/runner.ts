@@ -142,6 +142,18 @@ const ARG_SEPARATOR = '\u0001'
 const CGC_OUTPUT_FORMAT_ENV = 'CGC_OUTPUT_FORMAT'
 
 /**
+ * The environment variable CGC reads to decide whether a finished `cgc index`
+ * run forks into a foreground watcher and blocks forever. The extension owns
+ * its watcher policy (ADR-0007): the only watcher it sanctions is the opt-in
+ * managed `freshness.watch` child, so every runner-spawned child is pinned to
+ * `ENABLE_AUTO_WATCH=false` — merged over the inherited environment, every
+ * other variable passes through unchanged. Verified harmless on the managed
+ * watcher child (`cgc watch .` also goes through this runner): `cgc watch`
+ * never reads the variable, so the pin is inert there.
+ */
+const CGC_AUTO_WATCH_ENV = 'ENABLE_AUTO_WATCH'
+
+/**
  * Bounded byte buffer keeping the HEAD and TAIL of a stream (design D2 of
  * add-cgc-output-token-economy): the first and last `maxBytes` are retained
  * while the true total is tracked (`totalBytes`), so the truncation marker
@@ -378,13 +390,15 @@ export class CgcRunner {
 
   /**
    * The child environment for one invocation: the caller's environment (or the
-   * process default) plus CGC's output-format request when `output.gcf` is on
-   * (design D5, task 1.6). The runner never probes for `gcf-python` — CGC
-   * performs its own documented JSON fallback, so the invocation always
-   * succeeds regardless of what the installed CGC can produce.
+   * process default), the unconditional watcher-policy pin (`ENABLE_AUTO_WATCH=false`
+   * — the extension owns its watcher policy, ADR-0007), and CGC's output-format
+   * request when `output.gcf` is on (design D5, task 1.6). The runner never
+   * probes for `gcf-python` — CGC performs its own documented JSON fallback,
+   * so the invocation always succeeds regardless of what the installed CGC
+   * can produce.
    */
   private childEnv(base: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
-    const env = base ?? process.env
+    const env = { ...(base ?? process.env), [CGC_AUTO_WATCH_ENV]: 'false' }
     if (!this.gcfOutput) return env
     return { ...env, [CGC_OUTPUT_FORMAT_ENV]: 'gcf' }
   }

@@ -85,13 +85,17 @@ class TimeoutRecordingRunner {
 }
 
 function makeConfig(
-  overrides: Partial<{ autoCreate: boolean; syncOnStart: boolean }> = {},
+  overrides: Partial<{
+    autoCreate: boolean
+    syncOnStart: boolean
+    maintenanceTimeoutMs: number
+  }> = {},
 ): ExtensionConfig {
   return {
     cgc: {
       executable: 'cgc',
       timeoutMs: 30_000,
-      maintenanceTimeoutMs: 600_000,
+      maintenanceTimeoutMs: overrides.maintenanceTimeoutMs ?? 600_000,
       versionProbeTimeoutMs: 10_000,
       api: { enabled: true, port: 8_000 },
     },
@@ -106,6 +110,19 @@ function makeConfig(
     tools: { cliGap: { enabled: true } },
     guidance: { routingSkill: false },
   }
+}
+
+/**
+ * The absent-key fixture (design D2 of add-maintenance-budget-to-gate-spawns):
+ * `cgc.maintenanceTimeoutMs` removed, so the gate's construction sites pass
+ * `undefined` through and the seams stay unset (the runner default applies).
+ */
+function makeConfigWithoutMaintenanceBudget(
+  overrides: Partial<{ autoCreate: boolean; syncOnStart: boolean }> = {},
+): ExtensionConfig {
+  const config = makeConfig(overrides)
+  delete (config.cgc as { maintenanceTimeoutMs?: number }).maintenanceTimeoutMs
+  return config
 }
 
 interface GateOptions {
@@ -682,6 +699,72 @@ describe('LifecycleGate task 3.3 audit fills (probe budgets, dispose, teardown)'
     expect(version?.timeoutMs).toBe(5_678)
     expect(health?.timeoutMs).toBe(1_234)
     expect(health?.cwd).toBe(cwd)
+  })
+
+  it('passes the maintenance budget to the drift-path sync spawn (add-maintenance-budget-to-gate-spawns 3.1)', async () => {
+    const runner = new TimeoutRecordingRunner()
+    runner.results.set('--version', versionResult())
+    runner.results.set('stats', stats.drift())
+    const cwd = makeWorkspace(true)
+    const gate = new LifecycleGate({
+      runner: runner as unknown as CgcRunner,
+      config: makeConfig({ maintenanceTimeoutMs: 600_000 }),
+    })
+
+    await gate.evaluate(cwd)
+    await settleUntil(gate, cwd, 'drift-sync-settled')
+
+    const sync = runner.calls.find((call) => call.args.join(' ') === 'index .')
+    expect(sync?.timeoutMs).toBe(600_000)
+  })
+
+  it('leaves the drift-path sync budget unset when the maintenance key is absent (D2 pass-through)', async () => {
+    const runner = new TimeoutRecordingRunner()
+    runner.results.set('--version', versionResult())
+    runner.results.set('stats', stats.drift())
+    const cwd = makeWorkspace(true)
+    const gate = new LifecycleGate({
+      runner: runner as unknown as CgcRunner,
+      config: makeConfigWithoutMaintenanceBudget(),
+    })
+
+    await gate.evaluate(cwd)
+    await settleUntil(gate, cwd, 'drift-sync-settled')
+
+    const sync = runner.calls.find((call) => call.args.join(' ') === 'index .')
+    expect(sync?.timeoutMs).toBeUndefined()
+  })
+
+  it('passes the maintenance budget to the consented auto-create spawn (add-maintenance-budget-to-gate-spawns 3.2)', async () => {
+    const runner = new TimeoutRecordingRunner()
+    runner.results.set('--version', versionResult())
+    const cwd = makeWorkspace(false)
+    const gate = new LifecycleGate({
+      runner: runner as unknown as CgcRunner,
+      config: makeConfig({ autoCreate: true, maintenanceTimeoutMs: 600_000 }),
+    })
+
+    await gate.evaluate(cwd)
+    await settleUntil(gate, cwd, 'indexing-settled')
+
+    const spawn = runner.calls.find((call) => call.args.join(' ') === 'index .')
+    expect(spawn?.timeoutMs).toBe(600_000)
+  })
+
+  it('leaves the auto-create budget unset when the maintenance key is absent (D2 pass-through)', async () => {
+    const runner = new TimeoutRecordingRunner()
+    runner.results.set('--version', versionResult())
+    const cwd = makeWorkspace(false)
+    const gate = new LifecycleGate({
+      runner: runner as unknown as CgcRunner,
+      config: makeConfigWithoutMaintenanceBudget({ autoCreate: true }),
+    })
+
+    await gate.evaluate(cwd)
+    await settleUntil(gate, cwd, 'indexing-settled')
+
+    const spawn = runner.calls.find((call) => call.args.join(' ') === 'index .')
+    expect(spawn?.timeoutMs).toBeUndefined()
   })
 
   it('after dispose(), the registered session hooks are no-ops', async () => {

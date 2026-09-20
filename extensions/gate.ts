@@ -1121,6 +1121,7 @@ export class LifecycleGate {
         runner: this.runner,
         autoCreate: this.config.lifecycle.autoCreate,
         budget,
+        indexTimeoutMs: this.config.cgc.maintenanceTimeoutMs,
         onNotice: (notice: UnindexedNotice) =>
           this.forwardNotice(session, noticeTypeFor(notice.kind), notice.text),
       }),
@@ -1128,6 +1129,7 @@ export class LifecycleGate {
         runner: this.runner,
         syncOnStart: this.config.lifecycle.syncOnStart,
         budget,
+        syncTimeoutMs: this.config.cgc.maintenanceTimeoutMs,
       }),
       busy: new BusyPath({
         onNotice: (notice: BusyNotice) =>

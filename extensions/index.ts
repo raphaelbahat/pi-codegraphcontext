@@ -261,6 +261,7 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       runner: cachedRunner,
       autoSync: getConfig().config.freshness.autoSync,
       maxSyncsPerSession: getConfig().config.freshness.maxSyncsPerSession,
+      syncTimeoutMs: getConfig().config.cgc.maintenanceTimeoutMs,
       // Task 2.4: the opt-in continuous watcher (design D2 — off by default).
       watch: getConfig().config.freshness.watch,
       api: pi as unknown as FreshnessExtensionApi,

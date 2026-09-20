@@ -288,6 +288,28 @@ describe('lazy drift sync trigger (task 2.1: first drift, background run, progre
     h.settle({ ...OK })
     await h.flush()
   })
+
+  it('the maintenance budget reaches the auto-sync spawn (add-maintenance-budget-to-gate-spawns 3.3)', async () => {
+    const h = makeHarness({ syncTimeoutMs: 600_000 })
+    sessionStart(h.handlers)
+
+    toolCall(h.handlers)
+
+    expect(h.calls[0]?.timeoutMs).toBe(600_000)
+    h.settle({ ...OK })
+    await h.flush()
+  })
+
+  it('leaves the auto-sync budget unset when no syncTimeoutMs is configured (D2 pass-through)', async () => {
+    const h = makeHarness()
+    sessionStart(h.handlers)
+
+    toolCall(h.handlers)
+
+    expect(h.calls[0]?.timeoutMs).toBeUndefined()
+    h.settle({ ...OK })
+    await h.flush()
+  })
 })
 
 describe('per-session auto-sync budget (design D3: maxSyncsPerSession)', () => {

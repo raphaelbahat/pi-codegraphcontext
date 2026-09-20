@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.8.3...v0.9.0) (2026-09-20)
+
+
+### Features
+
+* backend-aware tri-state freshness.watch with verified watcher liveness ([ed6cfd4](https://github.com/raphaelbahat/pi-codegraphcontext/commit/ed6cfd41dd4ec84edf109d94b18d3bbaf6fa9833))
+
 ## [0.8.3](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.8.2...v0.8.3) (2026-09-20)
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.3](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.8.2...v0.8.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* gate and freshness maintenance spawns carry cgc.maintenanceTimeoutMs ([b9aebf1](https://github.com/raphaelbahat/pi-codegraphcontext/commit/b9aebf12db60acb5641c34e03b28d849f4089cba))
+* pin ENABLE_AUTO_WATCH=false on every runner-spawned cgc child ([313affa](https://github.com/raphaelbahat/pi-codegraphcontext/commit/313affa429389730d9c90a44802e990fc0eea359))
+
 ## [0.8.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.8.1...v0.8.2) (2026-09-19)
 
 

@@ -29,7 +29,7 @@ Rule: The extension SHALL determine the CGC index state of the active workspace 
 
 ### Requirement: Opt-in index creation
 
-Rule: A missing index SHALL be created only with explicit user consent.
+Rule: When `lifecycle.autoCreate` is enabled and the workspace has no index, the gate SHALL start the index creation in the background with a one-time notice, passing `cgc.maintenanceTimeoutMs` (the maintenance budget — an index creation is maintenance work, not a probe) as the invocation's time budget. Absent key → the pre-existing default budget applies. The consent-gated, one-time-notice, fail-open semantics are unchanged.
 
 #### Scenario: Auto-create disabled (default)
 
@@ -42,6 +42,12 @@ Rule: A missing index SHALL be created only with explicit user consent.
 - **GIVEN** the workspace has no CGC index and the user has opted in to automatic creation
 - **WHEN** the session-start gate runs
 - **THEN** the extension starts indexing in the background, reports that indexing is running, and the session proceeds while it completes
+
+#### Scenario: Consented auto-create carries the maintenance budget
+
+- **WHEN** `lifecycle.autoCreate` is on and the session starts on an unindexed workspace
+- **THEN** the background creation spawn's time budget is `cgc.maintenanceTimeoutMs`
+- **AND** the user receives the same one-time notice as before
 
 ### Requirement: Start-time drift sync
 
@@ -91,7 +97,7 @@ Rule: When the workspace index is healthy and unchanged since the last session, 
 
 ### Requirement: Safe execution and teardown of cgc invocations
 
-Rule: Every `cgc` invocation the extension makes SHALL be sandboxed, cancellable, deduplicated, and cleaned up.
+Rule: Every `cgc` invocation the extension makes SHALL be sandboxed, cancellable, deduplicated, and cleaned up. Every extension-spawned `cgc` child SHALL additionally carry a pinned watcher-policy environment (`ENABLE_AUTO_WATCH=false`, merged over the inherited environment so every other variable is inherited unchanged), so a short-lived index run can never fork its own background watcher and block on it — the extension's watcher policy is owned by the extension, and the only watcher it sanctions is the opt-in managed `freshness.watch` child. The pin is inert on the managed watcher child (`cgc watch` never reads the variable), so `freshness.watch` behavior is unchanged.
 
 #### Scenario: Indexing command runs to completion
 
@@ -110,6 +116,24 @@ Rule: Every `cgc` invocation the extension makes SHALL be sandboxed, cancellable
 - **GIVEN** the session ends while a `cgc` maintenance command or watcher started by the gate is running
 - **WHEN** the session shuts down
 - **THEN** all extension-spawned `cgc` processes are terminated through multiple cleanup paths, leaving no orphaned processes holding database locks
+
+#### Scenario: Machine environment enables CGC auto-watch
+
+- **GIVEN** the machine environment or CGC config sets `ENABLE_AUTO_WATCH=true`
+- **WHEN** the extension spawns a short-lived `cgc index` run (a sync verb, the session-start sync, a freshness auto-sync, or an auto-create)
+- **THEN** the child's environment carries `ENABLE_AUTO_WATCH=false`, the run finishes indexing and exits without forking a background watcher, and the invocation settles on its own instead of hanging
+
+#### Scenario: Inherited environment is otherwise untouched
+
+- **GIVEN** the extension spawns any `cgc` invocation
+- **WHEN** the runner constructs the child environment
+- **THEN** every environment variable other than `ENABLE_AUTO_WATCH` is inherited unchanged (including CGC's credential variables), and the pin is merged over the inherited values rather than replacing them
+
+#### Scenario: Managed watcher child is unaffected by the pin
+
+- **GIVEN** `freshness.watch` is enabled and the observer starts CGC's own `cgc watch .` as a managed child through the shared runner
+- **WHEN** the runner applies the spawn environment pin
+- **THEN** the watcher child starts and keeps watching normally, because `cgc watch` does not read `ENABLE_AUTO_WATCH` — the pin is inert on it
 
 ### Requirement: Fail-open operation
 
@@ -266,3 +290,18 @@ Rule: When Pi replaces the session (`/resume`, `/new`, `/fork`, `/reload`) and r
 - **GIVEN** the shared runner holds tracked children and the process-lifetime stores hold recorded snapshots from earlier sessions
 - **WHEN** a session replacement rebinds the surfaces
 - **THEN** the runner's child tracking and the process-lifetime stores are preserved (the same runner instance keeps sweeping; recorded snapshots remain readable), while the per-session budgets, one-shot flags, and once-per-session notice markers re-arm for the new session
+
+### Requirement: Gate maintenance spawns carry the maintenance budget
+
+Rule: The gate's session-start maintenance spawns — the consented auto-create index (`UnindexedPath`, `lifecycle.autoCreate` on) and the start-time drift sync (`DriftPath`, `lifecycle.syncOnStart` on) — SHALL pass `cgc.maintenanceTimeoutMs` (default 600 000 ms) as the spawned \`cgc\` invocation's time budget, because these runs are the same work class as the \`/cgc index\` and \`/cgc sync\` command runs and are not probes. When the key is absent the seams stay unset and the pre-existing runner default (`cgc.timeoutMs`, probe-sized) applies byte-for-byte.
+
+#### Scenario: Session-start drift sync on a large workspace completes
+
+- **WHEN** the session-start evaluation detects drift and starts a background incremental sync
+- **THEN** the spawned invocation's time budget is `cgc.maintenanceTimeoutMs` (the maintenance-sized default), so a run that legitimately takes longer than a probe is not terminated
+- **AND** the completion (or any recorded termination) flows through the lifecycle state exactly as today
+
+#### Scenario: Maintenance key absent leaves current behavior
+
+- **WHEN** `cgc.maintenanceTimeoutMs` is absent from every config layer and the environment
+- **THEN** the gate's spawn seams remain unset and the runner applies its existing default budget — the behavior is unchanged from the pre-change code

@@ -174,8 +174,13 @@ overrides.
    tool call of a session and marks the workspace possibly-stale. With
    `freshness.autoSync` on (default on) it starts one budgeted background
    incremental `cgc index .`, capped at `freshness.maxSyncsPerSession` per
-   session. With `freshness.watch` on (opt-in) CGC's own `cgc watch .` runs as
-   a managed child instead; a busy start degrades back to lazy mode.
+   session. With `freshness.watch` `on` (opt-in) CGC's own `cgc watch .` runs as
+   a managed child instead; a busy start degrades back to lazy mode, and the
+   fresh claim only records after the watcher's liveness is verified (within
+   `freshness.watcherLivenessMs`) — a dead watcher never reports fresh. With
+   `freshness.watch` `auto` the watcher starts only on server backends
+   (neo4j / falkordb-remote) on already-indexed workspaces; embedded or
+   unknown backends and unindexed workspaces conservatively start nothing.
 
 Lifecycle states `clean`, `drift`, `syncing`, `indexing`, and `rebuilding` are
 ready for graph queries. `unavailable`, `unindexed`, `busy`, and `corrupt`
@@ -223,7 +228,8 @@ warning and fall back to the lower layer.
 | `proactive.sessionNote` | `true` | `CGC_PROACTIVE_SESSION_NOTE` | One capped coverage note per session. |
 | `proactive.driftSteers` | `false` | `CGC_PROACTIVE_DRIFT_STEERS` | Opt-in: one staleness steer naming `/cgc sync`. |
 | `proactive.resultAnnotations` | `false` | `CGC_PROACTIVE_RESULT_ANNOTATIONS` | Opt-in: one-line freshness annotation on extension-produced renders. |
-| `freshness.watch` | `false` | `CGC_FRESHNESS_WATCH` | Opt-in: run `cgc watch .` as a managed child. |
+| `freshness.watch` | `off` | `CGC_FRESHNESS_WATCH` | Tri-state watcher mode: `off` never spawns, `on` always spawns, `auto` spawns only on server backends (neo4j / falkordb-remote) on already-indexed workspaces. `true`/`false` keep their old `on`/`off` meaning. |
+| `freshness.watcherLivenessMs` | `15000` | `CGC_FRESHNESS_WATCHER_LIVENESS_MS` | Liveness-verification budget: the watcher must survive this window before the workspace is reported fresh. |
 | `freshness.autoSync` | `true` | `CGC_FRESHNESS_AUTO_SYNC` | Budgeted incremental sync on first observed drift. |
 | `freshness.maxSyncsPerSession` | `2` | `CGC_FRESHNESS_MAX_SYNCS_PER_SESSION` | Cap on automatic syncs per session. |
 | `output.maxBytes` | `16384` | `CGC_OUTPUT_MAX_BYTES` | Bound on rendered command output. |

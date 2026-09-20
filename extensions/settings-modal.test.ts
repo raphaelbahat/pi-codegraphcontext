@@ -162,11 +162,13 @@ describe('SETTINGS_KEY_KINDS (the editable-key list, task 2.2)', () => {
     expect(Object.keys(SETTINGS_KEY_KINDS).sort()).toEqual([...CONFIG_KEYS].sort())
   })
 
-  it('kinds match the design: one enum (worktree.mode), booleans cycle, the rest are text', () => {
+  it('kinds match the design: two enums (worktree.mode, freshness.watch), booleans cycle, the rest are text', () => {
     expect(SETTINGS_KEY_KINDS['worktree.mode']).toBe('enum')
+    expect(SETTINGS_KEY_KINDS['freshness.watch']).toBe('enum')
     for (const key of CONFIG_KEYS) {
       const kind = SETTINGS_KEY_KINDS[key]
       if (key === 'worktree.mode') continue
+      if (key === 'freshness.watch') continue
       if (kind === 'boolean') continue
       expect(kind === 'number' || kind === 'string', `${key} -> ${kind}`).toBe(true)
     }
@@ -177,11 +179,7 @@ describe('SETTINGS_KEY_KINDS (the editable-key list, task 2.2)', () => {
 
 describe('validateSettingValue (task 1.1/D4: the loader rules, exactly)', () => {
   it('booleans accept the parseBoolean vocabulary and reject everything else', () => {
-    for (const key of [
-      'lifecycle.autoCreate',
-      'freshness.watch',
-      'tools.cliGap.enabled',
-    ] as ConfigKey[]) {
+    for (const key of ['lifecycle.autoCreate', 'tools.cliGap.enabled'] as ConfigKey[]) {
       expect(validateSettingValue(key, 'on')).toEqual({ ok: true, value: true })
       expect(validateSettingValue(key, 'off')).toEqual({ ok: true, value: false })
       expect(validateSettingValue(key, 'TRUE')).toEqual({ ok: true, value: true })
@@ -191,6 +189,19 @@ describe('validateSettingValue (task 1.1/D4: the loader rules, exactly)', () => 
       expect(invalid.ok).toBe(false)
       if (!invalid.ok) expect(invalid.error).toBe('expected 1/true/yes/on or 0/false/no/off')
     }
+  })
+
+  it('freshness.watch validates the tri-state vocabulary with boolean compatibility', () => {
+    expect(validateSettingValue('freshness.watch', 'off')).toEqual({ ok: true, value: 'off' })
+    expect(validateSettingValue('freshness.watch', 'on')).toEqual({ ok: true, value: 'on' })
+    expect(validateSettingValue('freshness.watch', 'auto')).toEqual({ ok: true, value: 'auto' })
+    // Booleans keep their meaning (the additive compat): true -> on, false -> off.
+    expect(validateSettingValue('freshness.watch', true)).toEqual({ ok: true, value: 'on' })
+    expect(validateSettingValue('freshness.watch', false)).toEqual({ ok: true, value: 'off' })
+    expect(validateSettingValue('freshness.watch', 'TRUE')).toEqual({ ok: true, value: 'on' })
+    const invalid = validateSettingValue('freshness.watch', 'maybe')
+    expect(invalid.ok).toBe(false)
+    if (!invalid.ok) expect(invalid.error).toBe('expected "off", "on", "auto", or a boolean')
   })
 
   it('worktree.mode accepts only off/isolate with the loader message', () => {
@@ -281,7 +292,7 @@ describe('buildSettingsRows (task 1.3: fresh-load rows with sources and env name
       expect(row.envVar).toBeUndefined()
       expect(row.fileWinner).toBeUndefined()
       expect(row.kind).toBe(
-        row.key === 'worktree.mode'
+        row.key === 'worktree.mode' || row.key === 'freshness.watch'
           ? 'cycle'
           : SETTINGS_KEY_KINDS[row.key] === 'boolean'
             ? 'cycle'

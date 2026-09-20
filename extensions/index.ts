@@ -20,6 +20,7 @@ import {
 import { type CgcCommandDependencies, registerCgcCommands } from './commands'
 import { type ConfigResult, loadConfig } from './config'
 import {
+  createBackendDetector,
   FreshnessDriftObserver,
   type FreshnessExtensionApi,
   getFreshnessStateStore,
@@ -262,8 +263,15 @@ export default function piCodegraphcontext(pi: ExtensionAPI): void {
       autoSync: getConfig().config.freshness.autoSync,
       maxSyncsPerSession: getConfig().config.freshness.maxSyncsPerSession,
       syncTimeoutMs: getConfig().config.cgc.maintenanceTimeoutMs,
-      // Task 2.4: the opt-in continuous watcher (design D2 — off by default).
+      // Task 2.4: the continuous watcher (tri-state, off by default — design
+      // D1/D3/D6 of add-freshness-watch-tri-state). `auto` resolves the backend
+      // through the bounded detector (configured executable) and never spawns
+      // on an embedded/unknown backend or an unindexed workspace.
       watch: getConfig().config.freshness.watch,
+      watcherLivenessMs: getConfig().config.freshness.watcherLivenessMs,
+      detectBackend: createBackendDetector({
+        executable: getConfig().config.cgc.executable,
+      }),
       api: pi as unknown as FreshnessExtensionApi,
     })
     cachedFreshnessObserver.register(pi as unknown as FreshnessExtensionApi)

@@ -91,14 +91,32 @@ export interface WorktreeConfig {
   mode: WorktreeMode
 }
 
+/** The freshness watcher mode (tri-state design of add-freshness-watch-tri-state). */
+export type WatchMode = 'off' | 'on' | 'auto'
+
 /** Session freshness drift/sync tier (design D2/D3 of add-cgc-freshness-drift-sync). */
 export interface FreshnessConfig {
   /**
-   * Run CGC's own watcher as a managed child process (default off, opt-in).
-   * A running watcher holds the embedded database, so it trades away the
-   * user's own CGC MCP server availability for continuous freshness.
+   * The continuous watcher mode (tri-state, default `off`):
+   * - `off` — no watcher is ever spawned (byte-compatible with the old `false`).
+   * - `on` — CGC's own watcher runs as a managed child unconditionally on every
+   *   backend (byte-compatible with the old `true`; the user accepts the
+   *   trade-offs, including the embedded-backend lock).
+   * - `auto` — the gated backend-aware mode: the watcher spawns only when the
+   *   detected backend is a server backend (neo4j / falkordb-remote), the
+   *   workspace is already indexed, and the watcher's liveness is verified
+   *   (within `watcherLivenessMs`) before the fresh claim is recorded. Only
+   *   the literal text `auto` enables this mode — existing booleans map to
+   *   on/off and never inherit the gating.
    */
-  watch: boolean
+  watch: WatchMode
+  /**
+   * Liveness-verification budget for the managed watcher (default 15000):
+   * after spawning, the watcher must survive this window without settling as
+   * failed before the workspace is recorded fresh; a dead or failed watcher
+   * records the honest not-verified state plus a one-time notice.
+   */
+  watcherLivenessMs: number
   /**
    * Run short-lived incremental indexes on first drift (default on), capped
    * at `maxSyncsPerSession`; after the cap, staleness is advisory only.
@@ -192,6 +210,7 @@ export type ConfigKey =
   | 'proactive.driftSteers'
   | 'proactive.resultAnnotations'
   | 'freshness.watch'
+  | 'freshness.watcherLivenessMs'
   | 'freshness.autoSync'
   | 'freshness.maxSyncsPerSession'
   | 'output.maxBytes'
@@ -241,7 +260,8 @@ export const DEFAULT_CONFIG: ExtensionConfig = {
     resultAnnotations: false,
   },
   freshness: {
-    watch: false,
+    watch: 'off',
+    watcherLivenessMs: 15_000,
     autoSync: true,
     maxSyncsPerSession: 2,
   },
@@ -276,6 +296,7 @@ export const CONFIG_ENV_VARS: Record<ConfigKey, string> = {
   'proactive.driftSteers': 'CGC_PROACTIVE_DRIFT_STEERS',
   'proactive.resultAnnotations': 'CGC_PROACTIVE_RESULT_ANNOTATIONS',
   'freshness.watch': 'CGC_FRESHNESS_WATCH',
+  'freshness.watcherLivenessMs': 'CGC_FRESHNESS_WATCHER_LIVENESS_MS',
   'freshness.autoSync': 'CGC_FRESHNESS_AUTO_SYNC',
   'freshness.maxSyncsPerSession': 'CGC_FRESHNESS_MAX_SYNCS_PER_SESSION',
   'output.maxBytes': 'CGC_OUTPUT_MAX_BYTES',
@@ -308,6 +329,21 @@ export function parseWorktreeMode(raw: string): WorktreeMode | undefined {
   return undefined
 }
 
+/**
+ * Lenient watcher-mode parsing shared by env and file layers (tri-state with
+ * boolean compatibility): `auto` only from the literal text; booleans and
+ * their string forms map to `on`/`off` so existing configurations keep their
+ * exact meaning.
+ */
+export function parseWatchMode(raw: string): WatchMode | undefined {
+  const value = raw.trim().toLowerCase()
+  if (value === 'auto') return 'auto'
+  const parsed = parseBoolean(raw)
+  if (parsed === true) return 'on'
+  if (parsed === false) return 'off'
+  return undefined
+}
+
 // ---------------------------------------------------------------------------
 // Shared validation rules (add-cgc-settings-modal task 1.1).
 //
@@ -333,6 +369,25 @@ export function validateBooleanValue(raw: unknown): ValueRule<boolean> {
 export function validateWorktreeModeValue(raw: unknown): ValueRule<WorktreeMode> {
   const parsed = typeof raw === 'string' ? parseWorktreeMode(raw) : undefined
   if (parsed === undefined) return { ok: false, error: 'expected "off" or "isolate"' }
+  return { ok: true, value: parsed }
+}
+
+/**
+ * Watcher-mode rule: the tri-state vocabulary with boolean compatibility
+ * (booleans and boolean strings map to on/off; `auto` is literal-only).
+ */
+export function validateWatchModeValue(raw: unknown): ValueRule<WatchMode> {
+  const parsed =
+    typeof raw === 'boolean'
+      ? raw
+        ? 'on'
+        : 'off'
+      : typeof raw === 'string'
+        ? parseWatchMode(raw)
+        : undefined
+  if (parsed === undefined) {
+    return { ok: false, error: 'expected "off", "on", "auto", or a boolean' }
+  }
   return { ok: true, value: parsed }
 }
 
@@ -388,6 +443,24 @@ export function validateMaxSyncsPerSessionValue(raw: unknown): ValueRule<number>
   return { ok: true, value }
 }
 
+/**
+ * Watcher liveness-budget rule: a positive whole number of milliseconds
+ * (strings accepted) — the same shape as the other millisecond budgets but
+ * whole-number-strict, matching the maxSyncsPerSession validator.
+ */
+export function validateWatcherLivenessMsValue(raw: unknown): ValueRule<number> {
+  const value = typeof raw === 'string' ? Number(raw) : raw
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value <= 0
+  ) {
+    return { ok: false, error: 'expected a positive whole number of milliseconds' }
+  }
+  return { ok: true, value }
+}
+
 /** Executable rule: a non-empty string; the trimmed value is the result. */
 export function validateExecutableValue(raw: unknown): ValueRule<string> {
   if (typeof raw !== 'string' || raw.trim().length === 0) {
@@ -432,6 +505,20 @@ function parseMaxSyncsPerSession(
   warnings: string[],
 ): number | undefined {
   const result = validateMaxSyncsPerSessionValue(raw)
+  if (!result.ok) {
+    warnings.push(`${key}: ignoring invalid ${JSON.stringify(raw)} (${result.error})`)
+    return undefined
+  }
+  return result.value
+}
+
+/** Parse the watcher liveness budget (positive whole ms) shared by env and file layers. */
+function parseWatcherLivenessMs(
+  raw: unknown,
+  key: ConfigKey,
+  warnings: string[],
+): number | undefined {
+  const result = validateWatcherLivenessMsValue(raw)
   if (!result.ok) {
     warnings.push(`${key}: ignoring invalid ${JSON.stringify(raw)} (${result.error})`)
     return undefined
@@ -542,6 +629,9 @@ function readConfigFile(
   if (freshness !== undefined) {
     if (isPlainObject(freshness)) {
       if (freshness.watch !== undefined) values['freshness.watch'] = freshness.watch
+      if (freshness.watcherLivenessMs !== undefined) {
+        values['freshness.watcherLivenessMs'] = freshness.watcherLivenessMs
+      }
       if (freshness.autoSync !== undefined) values['freshness.autoSync'] = freshness.autoSync
       if (freshness.maxSyncsPerSession !== undefined) {
         values['freshness.maxSyncsPerSession'] = freshness.maxSyncsPerSession
@@ -718,13 +808,31 @@ function applyFileLayer(
         }
         break
       }
-      case 'freshness.watch':
+      case 'freshness.watch': {
+        const parsed = validateWatchModeValue(raw)
+        if (parsed.ok) {
+          config.freshness.watch = parsed.value
+          sources[key] = 'config-file'
+        } else {
+          warnings.push(
+            `${label}: ignoring invalid ${key} value ${JSON.stringify(raw)} (${parsed.error})`,
+          )
+        }
+        break
+      }
+      case 'freshness.watcherLivenessMs': {
+        const livenessMs = parseWatcherLivenessMs(raw, key, warnings)
+        if (livenessMs !== undefined) {
+          config.freshness.watcherLivenessMs = livenessMs
+          sources[key] = 'config-file'
+        }
+        break
+      }
       case 'freshness.autoSync': {
         const parsed =
           typeof raw === 'boolean' ? raw : typeof raw === 'string' ? parseBoolean(raw) : undefined
         if (parsed !== undefined) {
-          if (key === 'freshness.watch') config.freshness.watch = parsed
-          else config.freshness.autoSync = parsed
+          config.freshness.autoSync = parsed
           sources[key] = 'config-file'
         } else {
           warnings.push(`${label}: ignoring invalid ${key} value ${JSON.stringify(raw)}`)
@@ -850,7 +958,6 @@ function applyEnvLayer(
       case 'proactive.sessionNote':
       case 'proactive.driftSteers':
       case 'proactive.resultAnnotations':
-      case 'freshness.watch':
       case 'freshness.autoSync':
       case 'output.spillToTemp':
       case 'output.redactSecrets':
@@ -865,7 +972,6 @@ function applyEnvLayer(
           else if (key === 'proactive.driftSteers') config.proactive.driftSteers = parsed
           else if (key === 'proactive.resultAnnotations')
             config.proactive.resultAnnotations = parsed
-          else if (key === 'freshness.watch') config.freshness.watch = parsed
           else if (key === 'freshness.autoSync') config.freshness.autoSync = parsed
           else if (key === 'output.spillToTemp') config.output.spillToTemp = parsed
           else if (key === 'output.redactSecrets') config.output.redactSecrets = parsed
@@ -877,6 +983,26 @@ function applyEnvLayer(
           warnings.push(
             `${key}: ignoring invalid ${name} value ${JSON.stringify(raw)} (expected 1/true/yes/on or 0/false/no/off)`,
           )
+        }
+        break
+      }
+      case 'freshness.watch': {
+        const parsed = validateWatchModeValue(raw)
+        if (parsed.ok) {
+          config.freshness.watch = parsed.value
+          sources[key] = 'env'
+        } else {
+          warnings.push(
+            `${key}: ignoring invalid ${name} value ${JSON.stringify(raw)} (${parsed.error})`,
+          )
+        }
+        break
+      }
+      case 'freshness.watcherLivenessMs': {
+        const livenessMs = parseWatcherLivenessMs(raw, key, warnings)
+        if (livenessMs !== undefined) {
+          config.freshness.watcherLivenessMs = livenessMs
+          sources[key] = 'env'
         }
         break
       }

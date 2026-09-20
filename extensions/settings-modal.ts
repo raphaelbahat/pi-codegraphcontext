@@ -57,6 +57,8 @@ import {
   validateMaxSyncsPerSessionValue,
   validatePortValue,
   validateTimeoutMsValue,
+  validateWatcherLivenessMsValue,
+  validateWatchModeValue,
   validateWorktreeModeValue,
 } from './config'
 
@@ -69,8 +71,9 @@ export type SettingsKeyKind = 'boolean' | 'enum' | 'number' | 'string'
 
 /**
  * Every config key is file-layer-writable (design D5): the only runtime
- * read-only condition is an env-sourced effective value. `worktree.mode` is
- * the sole enum; numeric and string keys go through the in-modal text input.
+ * read-only condition is an env-sourced effective value. Enum keys cycle
+ * their value domain (see ENUM_OPTIONS); numeric and string keys go through
+ * the in-modal text input.
  */
 export const SETTINGS_KEY_KINDS: Readonly<Record<ConfigKey, SettingsKeyKind>> = Object.freeze({
   'cgc.executable': 'string',
@@ -85,8 +88,9 @@ export const SETTINGS_KEY_KINDS: Readonly<Record<ConfigKey, SettingsKeyKind>> = 
   'proactive.sessionNote': 'boolean',
   'proactive.driftSteers': 'boolean',
   'proactive.resultAnnotations': 'boolean',
-  'freshness.watch': 'boolean',
+  'freshness.watch': 'enum',
   'freshness.autoSync': 'boolean',
+  'freshness.watcherLivenessMs': 'number',
   'freshness.maxSyncsPerSession': 'number',
   'output.maxBytes': 'number',
   'output.spillToTemp': 'boolean',
@@ -103,6 +107,7 @@ const NUMBER_VALIDATORS: Readonly<Partial<Record<ConfigKey, (raw: unknown) => Va
     'cgc.versionProbeTimeoutMs': validateTimeoutMsValue,
     'cgc.api.port': validatePortValue,
     'output.maxBytes': validateMaxBytesValue,
+    'freshness.watcherLivenessMs': validateWatcherLivenessMsValue,
     'freshness.maxSyncsPerSession': validateMaxSyncsPerSessionValue,
   })
 
@@ -111,6 +116,18 @@ const BOOLEAN_KEYS: ReadonlySet<ConfigKey> = new Set(
     (key) => SETTINGS_KEY_KINDS[key] === 'boolean',
   ),
 )
+
+/** The cycle options per enum key — the real value domain the loader accepts. */
+const ENUM_OPTIONS: Readonly<Partial<Record<ConfigKey, readonly string[]>>> = Object.freeze({
+  'worktree.mode': ['off', 'isolate'],
+  'freshness.watch': ['off', 'on', 'auto'],
+})
+
+/** The cycle options for one enum key (booleans fall back to on/off). */
+function enumOptionsFor(key: ConfigKey): readonly string[] {
+  const options = ENUM_OPTIONS[key]
+  return options ?? ['on', 'off']
+}
 
 /**
  * Validate one edit against the SAME rule its loader enforces (design D4).
@@ -125,6 +142,7 @@ export function validateSettingValue(
 ): ValueRule<boolean | number | string> {
   const kind = SETTINGS_KEY_KINDS[key]
   if (kind === 'boolean') return validateBooleanValue(raw)
+  if (key === 'freshness.watch') return validateWatchModeValue(raw)
   if (kind === 'enum') return validateWorktreeModeValue(raw)
   if (kind === 'number') {
     const validator = NUMBER_VALIDATORS[key]
@@ -139,6 +157,7 @@ export function validateSettingValue(
 export function validationRuleText(key: ConfigKey): string {
   const kind = SETTINGS_KEY_KINDS[key]
   if (kind === 'boolean') return 'expected 1/true/yes/on or 0/false/no/off'
+  if (key === 'freshness.watch') return 'expected "off", "on", "auto", or a boolean'
   if (kind === 'enum') return 'expected "off" or "isolate"'
   if (kind === 'string') return 'expected a non-empty string'
   const validator = NUMBER_VALIDATORS[key]
@@ -215,6 +234,7 @@ const CONFIG_VALUE_GETTERS: Readonly<
   'proactive.driftSteers': (c) => c.proactive.driftSteers,
   'proactive.resultAnnotations': (c) => c.proactive.resultAnnotations,
   'freshness.watch': (c) => c.freshness.watch,
+  'freshness.watcherLivenessMs': (c) => c.freshness.watcherLivenessMs,
   'freshness.autoSync': (c) => c.freshness.autoSync,
   'freshness.maxSyncsPerSession': (c) => c.freshness.maxSyncsPerSession,
   'output.maxBytes': (c) => c.output.maxBytes,
@@ -605,7 +625,7 @@ export function buildSettingsModalComponent(params: {
         ...(row.kind === 'readonly'
           ? {}
           : row.kind === 'cycle'
-            ? { values: row.key === 'worktree.mode' ? ['off', 'isolate'] : ['on', 'off'] }
+            ? { values: [...enumOptionsFor(row.key)] }
             : { submenu: textInputSubmenu(row) }),
       }),
     ),
@@ -878,7 +898,7 @@ async function runDialogFlow(
     if (row === undefined) continue
 
     if (row.kind === 'cycle') {
-      const options = row.key === 'worktree.mode' ? ['off', 'isolate'] : ['on', 'off']
+      const options = [...enumOptionsFor(row.key)]
       const chosen = await ui.select(`${row.key} — choose a value`, options)
       if (chosen !== undefined) {
         const validated = validateSettingValue(row.key, chosen)

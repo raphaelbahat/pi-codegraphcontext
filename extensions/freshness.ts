@@ -50,7 +50,13 @@
 //     {@link getFreshnessStateStore}); the session boundary is enforced by
 //     `reset()` on `session_shutdown`, so no session ever carries state into
 //     the next one.
+import { spawn } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import type { WatchMode } from './config'
 import { FreshnessStateStore } from './freshness-state'
+import { isWorkspaceIndexed } from './workspace'
 
 /**
  * The deterministic file-modifying tool names the drift observer watches
@@ -155,20 +161,49 @@ export interface FreshnessDriftObserverOptions {
    */
   autoSync?: boolean
   /**
-   * Config `freshness.watch` (default false): the opt-in continuous watcher
-   * mode (design D2 — the watcher holds the embedded database, so it trades
-   * away the user's own CGC MCP server availability for continuous
-   * freshness). When enabled, the observer starts CGC's own `cgc watch .`
-   * as a managed child through the shared runner at session start; the
-   * child lands in the runner's live-children set, so every session cleanup
-   * path terminates it. While it runs it owns freshness: the workspace
-   * records fresh and session edits open no stale episode (no lazy syncs
-   * contend on the lock the watcher holds). A start blocked by a lock
-   * conflict (`BUSY`) degrades the session back to the lazy mode with a
-   * one-time busy notice under the shared `skipped-busy` condition key
-   * (task 2.4, design D4).
+   * Config `freshness.watch` (tri-state, default `off` — design D1 of
+   * add-freshness-watch-tri-state):
+   * - `off` — no watcher is ever spawned (byte-compatible with the old false).
+   * - `on` — CGC's own `cgc watch .` starts as a managed child through the
+   *   shared runner at session start, unconditionally on every backend (the
+   *   user accepts the trade-offs, including the embedded-backend lock). The
+   *   child lands in the runner's live-children set, so every session
+   *   cleanup path terminates it. A start blocked by a lock conflict (`BUSY`)
+   *   degrades the session back to the lazy mode with a one-time busy notice
+   *   under the shared `skipped-busy` condition key.
+   * - `auto` — the gated backend-aware mode: the watcher spawns only when the
+   *   detected backend is a server backend (neo4j / falkordb-remote), the
+   *   workspace is already indexed (never spawn on an unindexed workspace —
+   *   the `lifecycle.autoCreate` consent model stays), and the watcher's
+   *   liveness is verified (within `watcherLivenessMs`) before the fresh
+   *   claim is recorded. Each auto decline surfaces a one-time notice.
+   * In every spawning mode the workspace records fresh only AFTER the
+   * watcher's liveness is verified — a dead or failed watcher records the
+   * honest not-verified state (advisory stale + recorded error) plus a
+   * one-time notice, never a false "fresh".
    */
-  watch?: boolean
+  watch?: WatchMode
+  /**
+   * Config `freshness.watcherLivenessMs` (default 15000): the
+   * liveness-verification budget. After spawning the managed watcher, the
+   * observer waits this long for evidence of death; a watcher that settles
+   * as failed within the window never yields a fresh record.
+   */
+  watcherLivenessMs?: number
+  /**
+   * The CGC backend detector used by `auto` gating (production:
+   * {@link createBackendDetector} bound to the configured executable).
+   * May return the raw backend name or null (unknown). Omitting it (or an
+   * unknown result) resolves to the conservative embedded answer — `auto`
+   * never spawns when the backend cannot be determined (fail-open, ADR-0010).
+   */
+  detectBackend?: () => Promise<string | null> | string | null
+  /**
+   * Already-indexed check used by `auto` gating; defaults to the filesystem
+   * marker check ({@link isWorkspaceIndexed} — the same presence check CGC's
+   * own watcher uses for its "Already indexed" verdict). Injectable for tests.
+   */
+  isIndexed?: (cwd: string) => boolean
   /**
    * Config `freshness.maxSyncsPerSession` (default 2): the per-session cap
    * of automatic syncs (design D3). After the cap, further drift refreshes
@@ -202,6 +237,12 @@ export interface FreshnessDriftObserverOptions {
    * path records later (task 2.x) carry their own `at`.
    */
   now?: () => number
+  /**
+   * Injectable delay for the liveness-verification window; defaults to a
+   * real `setTimeout`. Tests inject an immediate resolution to drive the
+   * verification deterministically.
+   */
+  sleep?: (ms: number) => Promise<void>
 }
 
 /**
@@ -231,12 +272,25 @@ export class FreshnessDriftObserver {
   private readonly syncTimeoutMs: number | undefined
   /** Automatic syncs started this session (the design D3 budget). */
   private syncsThisSession = 0
-  /** Config `freshness.watch` — the opt-in continuous watcher mode (task 2.4). */
-  private readonly watch: boolean
   /**
-   * True while the managed watcher is running (optimistic from its spawn
-   * until it settles). While active it owns freshness: drift marks are
-   * suppressed and lazy syncs are skipped (task 2.4).
+   * Config `freshness.watch` — the continuous watcher mode (task 2.4,
+   * tri-state per add-freshness-watch-tri-state: off / on / auto).
+   */
+  private readonly watch: WatchMode
+  /** Config `freshness.watcherLivenessMs` — the liveness-verification budget. */
+  private readonly watcherLivenessMs: number
+  /** The backend detector used by `auto` gating (undefined → conservative no-spawn). */
+  private readonly detectBackend: (() => Promise<string | null> | string | null) | undefined
+  /** The already-indexed check used by `auto` gating. */
+  private readonly isIndexed: (cwd: string) => boolean
+  /** Injectable delay seam for the liveness-verification window (tests). */
+  private readonly sleep: (ms: number) => Promise<void>
+  /** Cached per-session backend detection (one bounded probe per session). */
+  private backendPromise: Promise<string | null> | undefined
+  /**
+   * True while the managed watcher is running (from its spawn until it
+   * settles). While active it owns freshness: drift marks are suppressed and
+   * lazy syncs are skipped (task 2.4).
    */
   private watcherActive = false
   /**
@@ -245,6 +299,13 @@ export class FreshnessDriftObserver {
    * and is not re-attempted until the next session.
    */
   private watcherFailed = false
+  /**
+   * True once the running watcher passed liveness verification (the fresh
+   * claim is recorded only after this). A settle before verification is the
+   * honest not-verified case; a verified death keeps the today behavior
+   * (the next observed edit re-opens the episode and lazy mode takes over).
+   */
+  private watcherVerified = false
   /**
    * Pi's `ui.notify` captured at session start (design D4 notice sink; the
    * user-facing notice surface — never the agent context, ADR-0002).
@@ -270,7 +331,11 @@ export class FreshnessDriftObserver {
     this.runner = options.runner
     this.autoSync = options.autoSync ?? true
     this.maxSyncsPerSession = options.maxSyncsPerSession ?? 2
-    this.watch = options.watch ?? false
+    this.watch = options.watch ?? 'off'
+    this.watcherLivenessMs = options.watcherLivenessMs ?? DEFAULT_WATCHER_LIVENESS_MS
+    this.detectBackend = options.detectBackend
+    this.isIndexed = options.isIndexed ?? isWorkspaceIndexed
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
     this.syncTimeoutMs = options.syncTimeoutMs
   }
 
@@ -387,9 +452,13 @@ export class FreshnessDriftObserver {
       // The watcher attempt is per-session too (task 2.4, design D2):
       // whatever happened this session (running, blocked, failed), the next
       // session starts fresh. A still-live child is the runner's teardown
-      // paths' job — its late settle no-ops on the cleared flags.
+      // paths' job — its late settle no-ops on the cleared flags. The
+      // backend detection cache is per-session as well (one bounded probe
+      // per session, design D2 of add-freshness-watch-tri-state).
       this.watcherActive = false
       this.watcherFailed = false
+      this.watcherVerified = false
+      this.backendPromise = undefined
       this.store.reset()
     } catch {
       // Fail-open: shutdown must never throw.
@@ -581,28 +650,62 @@ export class FreshnessDriftObserver {
   }
 
   /**
-   * The opt-in continuous watcher start point (task 2.4, design D2): when
-   * `freshness.watch` is on, a runner is available, and the worktree gate
-   * does not block the workspace, start CGC's own `cgc watch .` as a managed
-   * child through the shared runner at session start. The child lands in the
-   * runner's live-children set, so every session cleanup path (cleanup.ts's
-   * three teardown paths) terminates it — the watcher never outlives the
-   * session or orphan-holds the database lock. One attempt per session
-   * (task 3.2's retry cap): on any failure the mode degrades to the lazy
-   * auto-sync behavior (design D2). Guarded fail-open and fire-and-forget:
-   * no path here throws into `session_start`, and the spawn is never awaited.
+   * The continuous watcher start point (task 2.4, tri-state per
+   * add-freshness-watch-tri-state):
+   * - `off` — never spawns (no detection, no spawn; byte-compatible with the
+   *   old boolean false).
+   * - `on` — spawns unconditionally when a runner is available and the
+   *   worktree gate does not block the workspace (byte-compatible with the
+   *   old boolean true; the user accepts the embedded-backend lock).
+   * - `auto` — spawns only when ALL gated conditions hold: the detected
+   *   backend is a server backend (unknown → conservative no-spawn), and the
+   *   workspace is already indexed (never spawn on an unindexed workspace —
+   *   the `lifecycle.autoCreate` consent model stays). Each decline surfaces
+   *   a one-time notice so the conservative default is observable.
+   * The spawn is one attempt per session (task 3.2's retry cap); on any
+   * failure the mode degrades to the lazy auto-sync behavior. The gating is
+   * async but fire-and-forget: nothing here blocks or throws into
+   * `session_start`, and the backend detection runs at most once per session.
    */
   private startWatcherIfEnabled(): void {
+    // Fire-and-forget the async gating: the `on` path runs synchronously up
+    // to the spawn (so spawn calls are recorded synchronously), the `auto`
+    // path awaits the bounded backend detection. Never awaited by the hook.
+    void this.startWatcherGated().catch(() => undefined)
+  }
+
+  private async startWatcherGated(): Promise<void> {
     let cwd: string | undefined
     try {
       if (this.disposed) return
-      if (!this.watch) return
+      if (this.watch === 'off') return
       if (this.watcherActive || this.watcherFailed) return
       cwd = this.sessionCwd
       if (cwd === undefined) return
       if (this.isBlocked(cwd)) return
       const runner = this.runner
       if (runner === undefined) return
+      if (this.watch === 'auto') {
+        const backend = await this.resolveBackend()
+        if (!isServerBackend(backend)) {
+          // Conservative decline (ADR-0010): embedded or unknown backend.
+          this.notifyOnce(
+            'watcher-not-started-embedded',
+            buildWatcherNotStartedEmbeddedNotice(cwd, backend),
+            'info',
+          )
+          return
+        }
+        if (!this.isIndexed(cwd)) {
+          // Consent decline: watching never implies creating (ADR-0010).
+          this.notifyOnce(
+            'watcher-not-started-unindexed',
+            buildWatcherNotStartedUnindexedNotice(cwd),
+            'info',
+          )
+          return
+        }
+      }
       this.watcherActive = true
       this.startWatcher(runner, cwd)
     } catch (error) {
@@ -619,18 +722,34 @@ export class FreshnessDriftObserver {
   }
 
   /**
-   * Spawn the managed watcher child and record the session's freshness mode.
-   * The workspace is recorded `fresh` at start — the watcher keeps the graph
-   * incrementally current (spec: watcher mode reports fresh while files
-   * change), so session edits open NO stale episode and no lazy sync runs
-   * (they would only contend on the database lock the watcher holds). The
-   * run is fire-and-forget with a long time budget (a watcher outlives any
-   * index command yet is still subject to the runner's termination paths);
-   * its settlement transitions the mode (see {@link settleWatcher}). Never
+   * Resolve the CGC backend for `auto` gating (design D2 of
+   * add-freshness-watch-tri-state): the injected detector when wired,
+   * else null (unknown → conservative embedded). The result is cached per
+   * session — one bounded probe, never a per-session-start storm.
+   */
+  private resolveBackend(): Promise<string | null> {
+    const detector = this.detectBackend
+    if (detector === undefined) return Promise.resolve(null)
+    this.backendPromise ??= Promise.resolve().then(() => detector())
+    return this.backendPromise
+  }
+
+  /**
+   * Spawn the managed watcher child. The workspace is NOT recorded fresh
+   * here — that claim now follows liveness verification (design D4 of
+   * add-freshness-watch-tri-state): the tracking promise resolves only when
+   * the watcher exits, so "settled within the verification window" is the
+   * observable death signal. After the spawn, {@link verifyWatcherLiveness}
+   * waits the `freshness.watcherLivenessMs` budget: survival records fresh
+   * (the watcher keeps the graph incrementally current, so session edits
+   * open NO stale episode and no lazy sync runs — they would only contend on
+   * the lock a watcher holds); an early settle is handled by
+   * {@link settleWatcher} as the honest not-verified case. The run is
+   * fire-and-forget with a long time budget (a watcher outlives any index
+   * command yet is still subject to the runner's termination paths). Never
    * throws — a synchronously-throwing runner degrades to lazy mode.
    */
   private startWatcher(runner: FreshnessSyncRunner, cwd: string): void {
-    this.store.recordStatus({ cwd, status: 'fresh', at: this.now() })
     const options: FreshnessSyncRunOptions = {
       args: WATCHER_ARGS,
       timeoutMs: WATCHER_TIMEOUT_MS,
@@ -648,6 +767,7 @@ export class FreshnessDriftObserver {
       this.recordError(cwd, errorMessage(error, 'managed watcher failed to start'))
       return
     }
+    let settled = false
     void (async () => {
       let result: FreshnessSyncResult
       try {
@@ -659,23 +779,57 @@ export class FreshnessDriftObserver {
           message: `managed watcher failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
         }
       }
+      // Set the observable death flag BEFORE settlement handling, so the
+      // liveness verifier can never record fresh for a watcher that exited.
+      settled = true
       this.settleWatcher(cwd, result)
     })().catch(() => undefined)
+    void this.verifyWatcherLiveness(cwd, () => settled).catch(() => undefined)
+  }
+
+  /**
+   * The liveness-verification pass (design D4 of
+   * add-freshness-watch-tri-state): after the verification budget expires
+   * with the watcher still running (never settled as failed), record fresh
+   * and surface the one-time watcher-start notice — the verifiable "alive
+   * and watching" contract (CGC exposes no queryable watcher registry in
+   * v0.6.x, so process survival past the budget IS the verifiable claim). A
+   * watcher that settled during the window is skipped — settlement already
+   * recorded the honest state. A session that ended (or rebound to another
+   * cwd) during the window records nothing. Never throws (callers catch).
+   */
+  private async verifyWatcherLiveness(cwd: string, isSettled: () => boolean): Promise<void> {
+    await this.sleep(this.watcherLivenessMs)
+    if (this.disposed) return
+    if (this.sessionCwd !== cwd) return
+    if (isSettled() || !this.watcherActive || this.watcherVerified) return
+    this.watcherVerified = true
+    try {
+      this.store.recordStatus({ cwd, status: 'fresh', at: this.now() })
+    } catch {
+      // Fail-open: a broken store never blocks the notice below.
+    }
+    this.notifyOnce('watcher-started', buildWatcherStartedNotice(cwd), 'info')
   }
 
   /**
    * Settle the watcher's run: the watcher died or was terminated. The
    * watcher attempt is a per-session, one-shot capability (task 3.2's retry
    * cap): on ANY settle the session degrades to the lazy mode behavior —
-   * drift observation resumes opening stale episodes and the budgeted
-   * automatic sync path is re-enabled. A `BUSY` settle is the lock-blocked
-   * start (design D2 / spec: another CGC process holds the embedded
-   * database): the one-time notice names the conflict under the SHARED
-   * `skipped-busy` condition key (the same once-per-session budget as the
-   * lazy-sync busy skip, design D4) and the state store is left untouched —
-   * the next edit opens a normal episode the lazy path can act on. Other
-   * outcomes (OK exit, spawn/command failure, session termination) degrade
-   * silently (fail-open, ADR-0007); session teardown (`CANCELLED`) lands
+   * drift observation resumes and the budgeted automatic sync path is
+   * re-enabled (new episodes from the next session-start reconciliation). A
+   * `BUSY` settle is the lock-blocked start (design D2 / spec: another CGC
+   * process holds the embedded database): the one-time notice names the
+   * conflict under the SHARED `skipped-busy` condition key (the same
+   * once-per-session budget as the lazy-sync busy skip, design D4) and the
+   * state store is left untouched — the next edit opens a normal episode
+   * the lazy path can act on. A settle BEFORE liveness verification passed
+   * is the honest not-verified case (design D4 of
+   * add-freshness-watch-tri-state): the workspace records advisory stale
+   * plus the recorded failure and a one-time notice — never a false
+   * "fresh". A verified watcher's later death records the error only (the
+   * status stays fresh until the next observed edit re-opens the episode
+   * and the lazy path takes over). Session teardown (`CANCELLED`) lands
    * after the store's reset and records nothing. Never throws.
    */
   private settleWatcher(cwd: string, result: FreshnessSyncResult): void {
@@ -702,6 +856,15 @@ export class FreshnessDriftObserver {
             : 'managed watcher failed',
         )
       }
+      if (result.code === 'CANCELLED') return
+      if (this.watcherVerified) return
+      // Unverified failure: the honest not-verified state (design D4 of
+      // add-freshness-watch-tri-state) — advisory stale plus the failure
+      // already recorded above, and a one-time notice. No false "fresh".
+      this.store.recordStatus({ cwd, status: 'possibly-stale', at: this.now() })
+      const detail =
+        typeof result.message === 'string' && result.message.length > 0 ? result.message : undefined
+      this.notifyOnce('watcher-not-verified', buildWatcherNotVerifiedNotice(cwd, detail), 'warning')
     } catch (error) {
       // Fail-open: watcher settlement must never reject the tracking promise.
       // Task 3.2: best-effort record of the settlement failure itself.
@@ -801,6 +964,236 @@ export const WATCHER_ARGS: readonly string[] = ['watch', '.']
 export const WATCHER_TIMEOUT_MS = 24 * 60 * 60 * 1000
 
 /**
+ * Default liveness-verification budget for the managed watcher (design D4 of
+ * add-freshness-watch-tri-state; config `freshness.watcherLivenessMs`): long
+ * enough that a watcher that survives it is genuinely running, short enough
+ * that the fresh claim lands promptly after session start.
+ */
+export const DEFAULT_WATCHER_LIVENESS_MS = 15_000
+
+/**
+ * Hard budget for the `cgc doctor` backend-detection probe (design D2 of
+ * add-freshness-watch-tri-state): doctor runs CGC's own diagnostics (including
+ * database connectivity checks), so the probe must be bounded. A timeout or
+ * failure falls through to the next detection source, never blocks session
+ * start, and never spawns a watcher on its own.
+ */
+export const BACKEND_DETECT_TIMEOUT_MS = 5_000
+
+/**
+ * The SERVER backends (design D2 of add-freshness-watch-tri-state): the only
+ * backends where `auto` mode may spawn the watcher. The watcher-defaults
+ * research (source-verified lock semantics plus empirical probes) established
+ * that the exclusive process-scoped lock is an embedded-backend property — on
+ * these backends the watcher, the CGC MCP server, and index runs coexist.
+ * EVERY other value — kuzudb, falkordb (local), ladybugdb, nornic, unknown —
+ * is treated as embedded/conservative: `auto` never spawns on it.
+ */
+export const SERVER_BACKENDS: ReadonlySet<string> = new Set(['neo4j', 'falkordb-remote'])
+
+/**
+ * Whether a backend name is a server backend (case-insensitive, trimmed).
+ * Unknown/null are false — the conservative embedded answer (fail-open to
+ * no-spawn, ADR-0010).
+ */
+export function isServerBackend(name: string | null | undefined): boolean {
+  if (name === null || name === undefined) return false
+  return SERVER_BACKENDS.has(name.trim().toLowerCase())
+}
+
+/** Normalize a backend-name candidate: trimmed lowercase, empty → null. */
+function normalizeBackendName(raw: string | undefined): string | null {
+  if (raw === undefined) return null
+  const value = raw.trim().toLowerCase()
+  return value.length > 0 ? value : null
+}
+
+/**
+ * Parse CGC's doctor output for the resolved backend (design D2 of
+ * add-freshness-watch-tri-state): the `Default database: <name>` line that
+ * `cgc doctor` prints for the database it resolved through its own full
+ * precedence chain (runtime env → context database → merged .env →
+ * auto-detect; verified against CGC v0.6.13's cli/main.py). Returns null when
+ * the line is absent.
+ */
+export function parseDoctorBackend(output: string): string | null {
+  const match = /Default database:\s*([^\s(]+)/i.exec(output ?? '')
+  return normalizeBackendName(match?.[1])
+}
+
+/**
+ * Parse a CGC .env file's text for the backend keys CGC itself honors
+ * (`DATABASE_TYPE` / `DEFAULT_DATABASE`; verified against CGC v0.6.13's
+ * database-selection precedence). The LAST occurrence wins (dot-env override
+ * convention); optional surrounding quotes are stripped; anything unparseable
+ * yields null.
+ */
+export function parseEnvFileBackend(text: string): string | null {
+  if (typeof text !== 'string' || text.length === 0) return null
+  let found: string | null = null
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq <= 0) continue
+    const key = trimmed.slice(0, eq).trim()
+    if (key !== 'DATABASE_TYPE' && key !== 'DEFAULT_DATABASE') continue
+    let value = trimmed.slice(eq + 1).trim()
+    const hasMatchingQuotes =
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    if (hasMatchingQuotes) {
+      value = value.slice(1, -1)
+    }
+    found = normalizeBackendName(value) ?? found
+  }
+  return found
+}
+
+/** Injectable spawn-text seam for the doctor probe (tests pass a fake). */
+export type BackendProbe = (
+  command: string,
+  args: readonly string[],
+  timeoutMs: number,
+) => Promise<string | null>
+
+/** Injectable file-read seam for the .env fallback (tests pass a fake). */
+export type BackendFileReader = (path: string) => string | undefined
+
+export interface BackendDetectionOptions {
+  /** The cgc executable to probe (default `cgc`, resolved against PATH). */
+  executable?: string
+  /** Home directory for the `.codegraphcontext/.env` fallback (default os.homedir()). */
+  homeDir?: string
+  /**
+   * Environment consulted for CGC's runtime database overrides before any
+   * spawn (`CGC_RUNTIME_DB_TYPE`, then `DATABASE_TYPE` / `DEFAULT_DATABASE`,
+   * mirroring CGC's own precedence). Defaults to `process.env`.
+   */
+  env?: Record<string, string | undefined>
+  /** The doctor probe budget (default {@link BACKEND_DETECT_TIMEOUT_MS}). */
+  doctorTimeoutMs?: number
+  /** Injectable probe seam (default: a real bounded `cgc doctor` spawn). */
+  probe?: BackendProbe
+  /** Injectable file-read seam (default: a synchronous existsSync+read). */
+  readTextFile?: BackendFileReader
+}
+
+/**
+ * The bounded CGC backend-detection helper (design D2 of
+ * add-freshness-watch-tri-state). Resolution order mirrors CGC's own
+ * database-selection precedence (verified against CGC v0.6.13 source):
+ *   1. `CGC_RUNTIME_DB_TYPE` (CGC's runtime override),
+ *   2. `DATABASE_TYPE` / `DEFAULT_DATABASE` from the environment,
+ *   3. `cgc doctor`'s `Default database:` line (preferred over the .env read:
+ *      doctor resolves CGC's full chain — context database, merged .env,
+ *      auto-detect — itself), bounded by `doctorTimeoutMs`, any failure
+ *      falling through,
+ *   4. `DATABASE_TYPE` / `DEFAULT_DATABASE` from `~/.codegraphcontext/.env`,
+ *   5. null — unknown. Callers treat unknown as embedded (conservative
+ *      no-spawn; fail-open, ADR-0010). Never throws.
+ */
+export async function detectCgcBackend(
+  options: BackendDetectionOptions = {},
+): Promise<string | null> {
+  try {
+    const env = options.env ?? process.env
+    // 1–2: runtime overrides (cheap, and CGC's own top precedence).
+    const runtime =
+      normalizeBackendName(env['CGC_RUNTIME_DB_TYPE']) ??
+      normalizeBackendName(env['DATABASE_TYPE']) ??
+      normalizeBackendName(env['DEFAULT_DATABASE'])
+    if (runtime !== null) return runtime
+    // 3: the bounded doctor probe.
+    const probe =
+      options.probe ?? ((command, args, timeoutMs) => runDoctorProbe(command, args, timeoutMs))
+    const doctorOutput = await probe(
+      options.executable ?? 'cgc',
+      ['doctor'],
+      options.doctorTimeoutMs ?? BACKEND_DETECT_TIMEOUT_MS,
+    )
+    const fromDoctor = parseDoctorBackend(doctorOutput ?? '')
+    if (fromDoctor !== null) return fromDoctor
+    // 4: the .env fallback.
+    const read = options.readTextFile ?? readEnvFileText
+    const envText = read(join(options.homeDir ?? homedir(), '.codegraphcontext', '.env'))
+    return parseEnvFileBackend(envText ?? '')
+  } catch {
+    // Fail-open: detection must never throw — unknown is the safe answer.
+    return null
+  }
+}
+
+/**
+ * The production doctor probe: one bounded `cgc doctor` spawn. Resolves the
+ * combined output when the process produced any within the budget, null on
+ * spawn failure or timeout — the caller falls through to the next source.
+ */
+async function runDoctorProbe(
+  command: string,
+  args: readonly string[],
+  timeoutMs: number,
+): Promise<string | null> {
+  return await new Promise<string | null>((resolve) => {
+    let settled = false
+    const finish = (value: string | null): void => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    try {
+      const child = spawn(command, [...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+      let output = ''
+      const timer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          // Already gone.
+        }
+        finish(output.length > 0 ? output : null)
+      }, timeoutMs)
+      child.stdout?.on('data', (chunk: Buffer) => {
+        output += chunk.toString('utf8')
+      })
+      child.stderr?.on('data', (chunk: Buffer) => {
+        output += chunk.toString('utf8')
+      })
+      child.on('error', () => {
+        clearTimeout(timer)
+        finish(null)
+      })
+      child.on('close', () => {
+        clearTimeout(timer)
+        finish(output.length > 0 ? output : null)
+      })
+    } catch {
+      finish(null)
+    }
+  })
+}
+
+/** Synchronous .env read for the fallback source (missing/unreadable → undefined). */
+function readEnvFileText(path: string): string | undefined {
+  try {
+    if (!existsSync(path)) return undefined
+    return readFileSync(path, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The production backend detector for the observer's `auto` gating: bound to
+ * the configured executable and environment once, invoked at most once per
+ * session by the observer's cache.
+ */
+export function createBackendDetector(
+  options: Pick<BackendDetectionOptions, 'executable' | 'env'> = {},
+): () => Promise<string | null> {
+  return () => detectCgcBackend(options)
+}
+
+/**
  * The one-time skip-as-busy notice (task 2.3, design D4): when the embedded
  * database is locked by another CGC process at sync-settle time, the skip is
  * visible, the conflict named (the runner's BUSY message when known), and
@@ -832,6 +1225,71 @@ export function buildWatcherBlockedNotice(cwd: string, detail?: string): string 
     `CGC freshness: the continuous watcher for ${cwd} could not start — another CGC process is holding the embedded database.`,
     ...(detected ? [detected] : []),
     'Nothing started and nothing was modified; freshness degrades to the lazy mode for this session (the automatic index sync still runs on first observed drift, within the session budget). Stop the other CGC process (for example a running `cgc watch` or the CGC MCP server) when you want continuous watching, or run the sync manually (`cgc index .` or `/cgc sync`).',
+    'You will not be notified again for this condition this session.',
+  ].join('\n')
+}
+
+/**
+ * The one-time watcher-start notice (design D5 of
+ * add-freshness-watch-tri-state): the fresh claim is only recorded AFTER
+ * liveness verification, and the user sees ONE confirmation that the managed
+ * watcher is running and verified (condition key `watcher-started`).
+ */
+export function buildWatcherStartedNotice(cwd: string): string {
+  return [
+    `CGC freshness: the continuous watcher for ${cwd} is running — it was verified alive and is keeping the graph current.`,
+    'Session edits will not mark the workspace stale while it runs; stop it (or set freshness.watch to off) to return to the lazy sync mode.',
+    'You will not be notified again for this condition this session.',
+  ].join('\n')
+}
+
+/**
+ * The one-time auto-decline notice for an embedded/unknown backend (design
+ * D5 of add-freshness-watch-tri-state): `auto` never spawns on an embedded
+ * backend (the watcher would lock the user's own CGC processes out) or on an
+ * unknown backend (fail-open to the conservative answer) — the decline is
+ * observable, once per session, with the `on` escape hatch named.
+ */
+export function buildWatcherNotStartedEmbeddedNotice(cwd: string, backend?: string | null): string {
+  const detected = backend
+    ? `Detected backend: ${backend} (embedded or unknown — no watcher in auto mode).`
+    : undefined
+  return [
+    `CGC freshness: freshness.watch is "auto" — no watcher was started for ${cwd}.`,
+    ...(detected ? [detected] : []),
+    'In auto mode the watcher only starts on server backends (neo4j, falkordb-remote): on embedded backends a running watcher would lock out every other CGC process. The lazy drift sync still runs within the session budget. Set freshness.watch to "on" to force the watcher on this backend.',
+    'You will not be notified again for this condition this session.',
+  ].join('\n')
+}
+
+/**
+ * The one-time auto-decline notice for an unindexed workspace (design D5 of
+ * add-freshness-watch-tri-state): `auto` never spawns on an unindexed
+ * workspace — `cgc watch .` would perform a full initial scan, bypassing the
+ * `lifecycle.autoCreate` consent model. The decline is observable, once per
+ * session, with the index-first path named.
+ */
+export function buildWatcherNotStartedUnindexedNotice(cwd: string): string {
+  return [
+    `CGC freshness: freshness.watch is "auto" — no watcher was started for ${cwd} because the workspace is not indexed yet.`,
+    'In auto mode the watcher only starts on already-indexed workspaces: watching never implies creating. Index the workspace (`cgc index .` or `/cgc sync`, or enable lifecycle.autoCreate) and the watcher will start in a future session, or set freshness.watch to "on" to force it now.',
+    'You will not be notified again for this condition this session.',
+  ].join('\n')
+}
+
+/**
+ * The one-time watcher-not-verified notice (design D4 of
+ * add-freshness-watch-tri-state): the managed watcher spawned but settled as
+ * failed before liveness verification passed — the honest not-verified state
+ * (advisory stale + recorded error) replaces the old spawn-time fresh claim,
+ * so a dead watcher can never silence as "fresh".
+ */
+export function buildWatcherNotVerifiedNotice(cwd: string, detail?: string): string {
+  const detected = detail ? `Detected state: ${detail}.` : undefined
+  return [
+    `CGC freshness: the continuous watcher for ${cwd} failed before it could be verified — the workspace is NOT reported fresh.`,
+    ...(detected ? [detected] : []),
+    'Nothing was claimed fresh and no watcher retry fires this session; the advisory stale state stands and the lazy mode behavior resumes (the next session-start sync also reconciles). Run the sync manually any time (`cgc index .` or `/cgc sync`).',
     'You will not be notified again for this condition this session.',
   ].join('\n')
 }

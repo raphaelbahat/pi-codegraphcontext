@@ -66,7 +66,7 @@ describe('loadConfig', () => {
     expect(result.config.proactive.sessionNote).toBe(true)
     expect(result.config.proactive.driftSteers).toBe(false)
     expect(result.config.proactive.resultAnnotations).toBe(false)
-    expect(result.config.freshness.watch).toBe(false)
+    expect(result.config.freshness.watch).toBe('off')
     expect(result.config.freshness.autoSync).toBe(true)
     expect(result.config.freshness.maxSyncsPerSession).toBe(2)
     expect(result.config.output.maxBytes).toBe(16_384)
@@ -805,9 +805,9 @@ describe('loadConfig', () => {
     }
   })
 
-  it('defaults freshness.watch to false (opt-in watcher) with env override', () => {
+  it('tri-state freshness.watch: default off, env on/off/auto, invalid skipped', () => {
     const result = loadConfig({ env: cleanEnv(), cwd: '/nonexistent', homeDir: '/nonexistent' })
-    expect(result.config.freshness.watch).toBe(false)
+    expect(result.config.freshness.watch).toBe('off')
     expect(result.sources['freshness.watch']).toBe('default')
     expect(result.warnings).toEqual([])
 
@@ -816,7 +816,7 @@ describe('loadConfig', () => {
       cwd: '/nonexistent',
       homeDir: '/nonexistent',
     })
-    expect(on.config.freshness.watch).toBe(true)
+    expect(on.config.freshness.watch).toBe('on')
     expect(on.sources['freshness.watch']).toBe('env')
     expect(on.warnings).toEqual([])
 
@@ -825,17 +825,51 @@ describe('loadConfig', () => {
       cwd: '/nonexistent',
       homeDir: '/nonexistent',
     })
-    expect(off.config.freshness.watch).toBe(false)
+    expect(off.config.freshness.watch).toBe('off')
     expect(off.sources['freshness.watch']).toBe('env')
+
+    // The gated mode is literal-text only: booleans never imply auto.
+    const auto = loadConfig({
+      env: cleanEnv(envWith({ 'freshness.watch': 'Auto' })),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(auto.config.freshness.watch).toBe('auto')
+    expect(auto.sources['freshness.watch']).toBe('env')
 
     const invalid = loadConfig({
       env: cleanEnv(envWith({ 'freshness.watch': 'maybe' })),
       cwd: '/nonexistent',
       homeDir: '/nonexistent',
     })
-    expect(invalid.config.freshness.watch).toBe(false)
+    expect(invalid.config.freshness.watch).toBe('off')
     expect(invalid.sources['freshness.watch']).toBe('default')
     expect(invalid.warnings.join('\n')).toContain('freshness.watch')
+  })
+
+  it('defaults freshness.watcherLivenessMs to 15000 with env override and invalid skip', () => {
+    const result = loadConfig({ env: cleanEnv(), cwd: '/nonexistent', homeDir: '/nonexistent' })
+    expect(result.config.freshness.watcherLivenessMs).toBe(15_000)
+    expect(result.sources['freshness.watcherLivenessMs']).toBe('default')
+    expect(result.warnings).toEqual([])
+
+    const set = loadConfig({
+      env: cleanEnv(envWith({ 'freshness.watcherLivenessMs': '250' })),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(set.config.freshness.watcherLivenessMs).toBe(250)
+    expect(set.sources['freshness.watcherLivenessMs']).toBe('env')
+    expect(set.warnings).toEqual([])
+
+    const invalid = loadConfig({
+      env: cleanEnv(envWith({ 'freshness.watcherLivenessMs': '0' })),
+      cwd: '/nonexistent',
+      homeDir: '/nonexistent',
+    })
+    expect(invalid.config.freshness.watcherLivenessMs).toBe(15_000)
+    expect(invalid.sources['freshness.watcherLivenessMs']).toBe('default')
+    expect(invalid.warnings.join('\n')).toContain('freshness.watcherLivenessMs')
   })
 
   it('defaults freshness.autoSync to true (quiet tier, opt-out) with env override', () => {
@@ -911,7 +945,7 @@ describe('loadConfig', () => {
       )
 
       const fromFile = loadConfig({ env: cleanEnv(), cwd, homeDir: home })
-      expect(fromFile.config.freshness.watch).toBe(true)
+      expect(fromFile.config.freshness.watch).toBe('on')
       expect(fromFile.config.freshness.autoSync).toBe(false)
       expect(fromFile.config.freshness.maxSyncsPerSession).toBe(3)
       expect(fromFile.sources['freshness.watch']).toBe('config-file')
@@ -926,7 +960,7 @@ describe('loadConfig', () => {
         cwd,
         homeDir: home,
       })
-      expect(fromEnv.config.freshness.watch).toBe(false)
+      expect(fromEnv.config.freshness.watch).toBe('off')
       expect(fromEnv.sources['freshness.watch']).toBe('env')
       expect(fromEnv.config.freshness.autoSync).toBe(false)
       expect(fromEnv.config.freshness.maxSyncsPerSession).toBe(1)
@@ -1112,7 +1146,7 @@ describe('loadConfig', () => {
       expect(result.config.proactive.sessionNote).toBe(true)
       expect(result.config.proactive.driftSteers).toBe(false)
       expect(result.config.proactive.resultAnnotations).toBe(false)
-      expect(result.config.freshness.watch).toBe(false)
+      expect(result.config.freshness.watch).toBe('off')
       expect(result.config.freshness.autoSync).toBe(true)
       expect(result.config.freshness.maxSyncsPerSession).toBe(2)
       expect(result.config.output.maxBytes).toBe(16_384)

@@ -155,7 +155,8 @@ The modal degrades fail-open: overlay `ctx.ui.custom` → non-overlay `ctx.ui.cu
         "resultAnnotations": false
     },
     "freshness": {
-        "watch": false,
+        "watch": "off",
+        "watcherLivenessMs": 15000,
         "autoSync": true,
         "maxSyncsPerSession": 2
     },
@@ -186,7 +187,8 @@ The modal degrades fail-open: overlay `ctx.ui.custom` → non-overlay `ctx.ui.cu
 | `lifecycle` | `syncOnStart`                                        | `true`                              | Sync drift detected at session start                                                                                                                      |
 | `worktree`  | `mode`                                               | `"off"`                             | `"isolate"` maps each git worktree to its own CGC context                                                                                                 |
 | `proactive` | `sessionNote` / `driftSteers` / `resultAnnotations`  | `true` / `false` / `false`          | Proactive surfaces: the one-shot session note, drift steering, tool-result annotations                                                                    |
-| `freshness` | `watch` / `autoSync` / `maxSyncsPerSession`          | `false` / `true` / `2`              | File watching, background syncing, and its per-session bound                                                                                              |
+| `freshness` | `watch` / `watcherLivenessMs` / `autoSync` / `maxSyncsPerSession` | `"off"` / `15000` / `true` / `2`    | Tri-state watcher mode (`off` / `on` / `auto` — `auto` spawns only on server backends on already-indexed workspaces; `true`/`false` map to `on`/`off`), its liveness-verification budget, background syncing, and the per-session sync bound |
+| `freshness.watcherLivenessMs` | `15000`                            | `CGC_FRESHNESS_WATCHER_LIVENESS_MS` | Liveness-verification budget for the managed watcher: the workspace reports fresh only after the watcher survives this window                             |
 | `output`    | `maxBytes` / `spillToTemp` / `redactSecrets` / `gcf` | `16384` / `true` / `true` / `false` | Output budget, spill-to-disk, secret redaction, graph-context-format output                                                                               |
 | `tools`     | `cliGap.enabled`                                     | `true`                              | Registers the three CLI-gap tools (`cgc_bundle_export`, `cgc_context`, `cgc_doctor`)                                                                      |
 | `guidance`  | `routingSkill`                                       | `true`                              | Offers the `cgc-routing` skill to the agent (opt out with `false`)                                                                                        |

@@ -21,13 +21,18 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installProcessCleanup } from './cleanup'
+import type { WatchMode } from './config'
 import {
   AUTO_SYNC_ARGS,
+  detectCgcBackend,
   FreshnessDriftObserver,
   type FreshnessExtensionApi,
   type FreshnessNoticeSink,
   type FreshnessSyncResult,
   type FreshnessSyncRunner,
+  isServerBackend,
+  parseDoctorBackend,
+  parseEnvFileBackend,
   WATCHER_ARGS,
   WATCHER_TIMEOUT_MS,
 } from './freshness'
@@ -38,12 +43,20 @@ type Handlers = Map<string, (event: unknown, ctx: unknown) => unknown>
 
 interface SyncHarnessOptions {
   autoSync?: boolean
-  /** Opt-in continuous watcher mode (task 2.4). */
-  watch?: boolean
+  /** The continuous watcher mode (task 2.4, tri-state). */
+  watch?: WatchMode
   maxSyncsPerSession?: number
   syncTimeoutMs?: number
   worktreeBlockFor?: (cwd: string) => { blocked: boolean } | null
   now?: () => number
+  /** Liveness-verification budget (default 0 with the default immediate sleep). */
+  watcherLivenessMs?: number
+  /** Injectable verification delay; default resolves immediately. */
+  sleep?: (ms: number) => Promise<void>
+  /** Already-indexed check for `auto` gating (default: not indexed). */
+  isIndexed?: (cwd: string) => boolean
+  /** Backend detector for `auto` gating (default: none → conservative no-spawn). */
+  detectBackend?: () => Promise<string | null> | string | null
   /** Runner rejects every run with this message. */
   rejectWith?: string
   /** Runner throws synchronously from run(). */
@@ -121,6 +134,18 @@ function makeHarness(options: SyncHarnessOptions = {}): SyncHarness {
       ? {}
       : { worktreeBlockFor: options.worktreeBlockFor }),
     ...(options.now === undefined ? {} : { now: options.now }),
+    // Default harness liveness: the verification window resolves on a
+    // macrotask (capped at 1 ms) so `await h.flush()` settles the verifier
+    // deterministically AFTER any synchronous settle — a settle always wins
+    // the race, matching the real semantics where a fast-exiting watcher is
+    // observed before the verification budget expires. Tests override the
+    // sleep/budget seams explicitly when they need finer control.
+    watcherLivenessMs: options.watcherLivenessMs ?? 0,
+    sleep:
+      options.sleep ??
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, Math.min(ms, 1)))),
+    ...(options.isIndexed === undefined ? {} : { isIndexed: options.isIndexed }),
+    ...(options.detectBackend === undefined ? {} : { detectBackend: options.detectBackend }),
     api,
   })
   observer.register()
@@ -593,29 +618,36 @@ describe('error recording and one-attempt retry cap (task 3.2)', () => {
     expect(h.store.snapshot('/repo')?.lastError).toBeNull()
   })
 
-  it('a non-BUSY watcher failure is recorded, degrades to lazy, and never re-attempts', async () => {
-    const h = makeHarness({ watch: true })
+  it('a non-BUSY watcher failure records the honest not-verified state and never re-attempts', async () => {
+    const h = makeHarness({ watch: 'on' })
     sessionStart(h.handlers, '/repo', { notify: (text, type) => h.notices.push({ text, type }) })
 
     h.settle({ ...FAILED })
     await h.flush()
 
     expect(h.store.snapshot('/repo')?.lastError).toBe('boom')
-    expect(h.notices).toHaveLength(0) // the notice path is BUSY-only
+    // The honest not-verified degradation: advisory stale + ONE notice.
+    expect(h.store.snapshot('/repo')?.status).toBe('possibly-stale')
+    expect(h.notices).toHaveLength(1)
+    expect(h.notices[0]?.type).toBe('warning')
+    expect(h.notices[0]?.text).toContain('NOT reported fresh')
 
+    // Lazy mode resumed: the episode is already open, so the next edit
+    // records nothing and does not double-trigger (the notice names /cgc sync).
     toolCall(h.handlers)
-    expect(h.store.snapshot('/repo')?.status).toBe('syncing') // lazy mode resumed
-    expect(h.calls).toHaveLength(2) // watcher attempt + lazy sync, no watcher retry
+    expect(h.store.snapshot('/repo')?.status).toBe('possibly-stale')
+    expect(h.calls).toHaveLength(1) // watcher attempt only, no watcher retry
   })
 
-  it('a BUSY watcher settle records no lastError (a skip, not an error)', async () => {
-    const h = makeHarness({ watch: true })
+  it('a BUSY watcher settle records no lastError and no status claim (a skip, not an error)', async () => {
+    const h = makeHarness({ watch: 'on' })
     sessionStart(h.handlers)
 
     h.settle({ ...BUSY })
     await h.flush()
 
-    expect(h.store.snapshot('/repo')?.lastError).toBeNull()
+    // The store is left untouched: unrecorded = no claim, no error.
+    expect(h.store.snapshot('/repo')).toBeNull()
   })
 
   it('an event subscription failure is recorded at the next session start', () => {
@@ -853,16 +885,20 @@ describe('once-per-condition notices (task 3.1, design D4)', () => {
     expect(h.notices).toHaveLength(1) // stale notice only
     expect(h.notices[0]?.text).toContain('possibly stale')
   })
-
   it('the possibly-stale notice never fires while the managed watcher owns freshness', async () => {
-    const h = makeHarness({ watch: true })
+    const h = makeHarness({ watch: 'on' })
     sessionStart(h.handlers, '/repo', { notify: (text, type) => h.notices.push({ text, type }) })
 
     toolCall(h.handlers)
     await h.flush()
+    await h.flush()
 
-    expect(h.store.snapshot('/repo')?.status).toBe('fresh') // watcher keeps it fresh
-    expect(h.notices).toHaveLength(0)
+    // The verified watcher owns freshness: fresh state, watcher-start notice
+    // only — no possibly-stale notice (design D4's suppression).
+    expect(h.store.snapshot('/repo')?.status).toBe('fresh')
+    expect(h.notices).toHaveLength(1)
+    expect(h.notices[0]?.type).toBe('info')
+    expect(h.notices[0]?.text).toContain('verified alive')
   })
 
   it('a missing ui sink stays quiet (fail-open): state still flows, no notices', async () => {
@@ -915,22 +951,40 @@ describe('once-per-condition notices (task 3.1, design D4)', () => {
   })
 })
 
-describe('opt-in continuous watcher (task 2.4, design D2/D4)', () => {
+describe('continuous watcher (task 2.4, tri-state per add-freshness-watch-tri-state)', () => {
   // The watcher spawn lands in the shared runner's live-children set so
   // every session cleanup path (cleanup.ts) terminates it — exercised here
   // through the runner fake recording the spawn and its long time budget.
   const watcherCall = { cwd: '/repo', args: ['watch', '.'], timeoutMs: WATCHER_TIMEOUT_MS }
+  /** The harness default: the verification window resolves immediately. */
+  const verified = async (h: Awaited<ReturnType<typeof makeHarness>>): Promise<void> => {
+    await h.flush()
+    await h.flush()
+  }
 
-  it('session start with freshness.watch on spawns `cgc watch .` via the runner with a long budget and records fresh', () => {
-    const h = makeHarness({ watch: true })
+  it('session start with freshness.watch on spawns `cgc watch .` via the runner; fresh records only after liveness verification', async () => {
+    const h = makeHarness({ watch: 'on' })
     sessionStart(h.handlers)
 
     expect(WATCHER_ARGS).toEqual(['watch', '.'])
     expect(h.calls).toEqual([watcherCall])
-    // The watcher owns freshness from start: the workspace reports fresh.
+    // The honest claim: NO fresh record at spawn time (design D4).
+    expect(h.store.snapshot('/repo')).toBeNull()
+
+    await verified(h)
     const snap = h.store.snapshot('/repo')
     expect(snap?.status).toBe('fresh')
     expect(snap?.lastSyncedAt).not.toBeNull()
+  })
+
+  it('a verified watcher surfaces the one-time watcher-start notice', async () => {
+    const h = makeHarness({ watch: 'on' })
+    sessionStart(h.handlers, '/repo', { notify: (text, type) => h.notices.push({ text, type }) })
+
+    await verified(h)
+    expect(h.notices).toHaveLength(1)
+    expect(h.notices[0]?.type).toBe('info')
+    expect(h.notices[0]?.text).toContain('verified alive')
   })
 
   it('watch off (the default) spawns no watcher; lazy freshness behavior is unchanged', () => {
@@ -943,9 +997,10 @@ describe('opt-in continuous watcher (task 2.4, design D2/D4)', () => {
     expect(h.store.snapshot('/repo')?.status).toBe('syncing')
   })
 
-  it('while the watcher runs, session edits open no stale episode and no lazy sync starts', () => {
-    const h = makeHarness({ watch: true })
+  it('while a verified watcher runs, session edits open no stale episode and no lazy sync starts', async () => {
+    const h = makeHarness({ watch: 'on' })
     sessionStart(h.handlers)
+    await verified(h)
     expect(h.calls).toHaveLength(1)
 
     toolCall(h.handlers)
@@ -955,15 +1010,51 @@ describe('opt-in continuous watcher (task 2.4, design D2/D4)', () => {
     expect(h.store.snapshot('/repo')?.status).toBe('fresh')
   })
 
-  it('a BUSY watcher start fires ONE watcher-blocked notice and degrades to lazy mode', async () => {
-    const h = makeHarness({ watch: true })
+  it('a watcher that dies within the verification window never records fresh (honest not-verified)', async () => {
+    const h = makeHarness({ watch: 'on', watcherLivenessMs: 30 })
+    sessionStart(h.handlers, '/repo', { notify: (text, type) => h.notices.push({ text, type }) })
+    expect(h.calls).toEqual([watcherCall])
+    expect(h.store.snapshot('/repo')).toBeNull() // no claim at spawn
+
+    // The watcher settles as failed within the window.
+    h.settle({ ...FAILED })
+    await verified(h)
+
+    const snap = h.store.snapshot('/repo')
+    expect(snap?.status).toBe('possibly-stale') // the honest not-verified state
+    expect(snap?.lastError).toBe('boom')
+    expect(h.notices).toHaveLength(1)
+    expect(h.notices[0]?.type).toBe('warning')
+    expect(h.notices[0]?.text).toContain('NOT reported fresh')
+    expect(h.calls).toHaveLength(1) // no watcher retry
+  })
+
+  it('a verified watcher that dies later degrades lazily: the next edit re-opens the episode and syncs', async () => {
+    const h = makeHarness({ watch: 'on' })
+    sessionStart(h.handlers, '/repo', { notify: (text, type) => h.notices.push({ text, type }) })
+    await verified(h)
+    expect(h.store.snapshot('/repo')?.status).toBe('fresh')
+
+    // Mid-session death AFTER verification: error recorded, the status stays
+    // fresh until the next observed edit re-opens the episode (lazy takeover).
+    h.settle({ ...FAILED })
+    await h.flush()
+    expect(h.store.snapshot('/repo')?.lastError).toBe('boom')
+
+    toolCall(h.handlers)
+    expect(h.store.snapshot('/repo')?.status).toBe('syncing')
+    expect(h.calls).toHaveLength(2)
+  })
+
+  it('a BUSY watcher start fires ONE watcher-blocked notice, records nothing, and degrades to lazy mode', async () => {
+    const h = makeHarness({ watch: 'on' })
     sessionStart(h.handlers, '/repo', {
       notify: (text, type) => h.notices.push({ text, type }),
     })
     expect(h.calls).toEqual([watcherCall])
 
     h.settle({ ...BUSY })
-    await h.flush()
+    await verified(h)
 
     // The notice names the conflict; the state store is left untouched so the
     // next edit opens a normal episode the lazy path can act on.
@@ -971,7 +1062,7 @@ describe('opt-in continuous watcher (task 2.4, design D2/D4)', () => {
     expect(h.notices[0]?.type).toBe('warning')
     expect(h.notices[0]?.text).toContain('watcher')
     expect(h.notices[0]?.text).toContain('CGC MCP server')
-    expect(h.store.snapshot('/repo')?.status).toBe('fresh') // still fresh until first edit
+    expect(h.store.snapshot('/repo')).toBeNull() // unrecorded = no claim
 
     // Degraded to lazy mode: the next edit opens the episode and runs the
     // budgeted auto-sync.
@@ -984,12 +1075,12 @@ describe('opt-in continuous watcher (task 2.4, design D2/D4)', () => {
   })
 
   it('the watcher-blocked notice shares the skipped-busy once-per-session latch (no double notice)', async () => {
-    const h = makeHarness({ watch: true })
+    const h = makeHarness({ watch: 'on' })
     sessionStart(h.handlers, '/repo', {
       notify: (text, type) => h.notices.push({ text, type }),
     })
     h.settle({ ...BUSY })
-    await h.flush()
+    await verified(h)
     expect(busyKeyNotices(h.notices)).toHaveLength(1)
     expect(h.notices).toHaveLength(1) // watcher-blocked notice only, so far
 
@@ -1005,23 +1096,8 @@ describe('opt-in continuous watcher (task 2.4, design D2/D4)', () => {
     expect(h.notices).toHaveLength(2) // stale notice + busy notice
   })
 
-  it('a non-BUSY watcher failure degrades silently to lazy mode (fail-open), no re-attempt', async () => {
-    const h = makeHarness({ watch: true })
-    sessionStart(h.handlers, '/repo', {
-      notify: (text, type) => h.notices.push({ text, type }),
-    })
-
-    h.settle({ ...FAILED })
-    await h.flush()
-
-    expect(h.notices).toHaveLength(0) // no lock conflict → no busy notice
-    toolCall(h.handlers)
-    expect(h.store.snapshot('/repo')?.status).toBe('syncing') // lazy mode resumed
-    expect(h.calls).toHaveLength(2) // watcher attempt + lazy sync, no watcher retry
-  })
-
   it('the watcher attempt is per-session: shutdown resets the flags so a new session starts it again', () => {
-    const h = makeHarness({ watch: true })
+    const h = makeHarness({ watch: 'on' })
     sessionStart(h.handlers)
     expect(h.calls).toHaveLength(1)
 
@@ -1031,11 +1107,111 @@ describe('opt-in continuous watcher (task 2.4, design D2/D4)', () => {
   })
 
   it('a worktree-blocked workspace never starts the watcher (fail-closed gate)', () => {
-    const h = makeHarness({ watch: true, worktreeBlockFor: () => ({ blocked: true }) })
+    const h = makeHarness({ watch: 'on', worktreeBlockFor: () => ({ blocked: true }) })
     sessionStart(h.handlers)
 
     expect(h.calls).toHaveLength(0)
     expect(h.store.snapshots()).toEqual([])
+  })
+
+  // --- auto mode: the gated backend-aware default (design D3) ---
+
+  it('auto + server backend + indexed workspace spawns the watcher', async () => {
+    const h = makeHarness({
+      watch: 'auto',
+      detectBackend: () => 'neo4j',
+      isIndexed: () => true,
+    })
+    sessionStart(h.handlers)
+    await verified(h)
+
+    expect(h.calls).toEqual([watcherCall])
+    expect(h.store.snapshot('/repo')?.status).toBe('fresh')
+  })
+
+  it('auto + embedded backend never spawns (conservative no-spawn)', async () => {
+    const h = makeHarness({
+      watch: 'auto',
+      detectBackend: () => 'kuzudb',
+      isIndexed: () => true,
+    })
+    sessionStart(h.handlers, '/repo', { notify: (t, ty) => h.notices.push({ text: t, type: ty }) })
+    await verified(h)
+
+    expect(h.calls).toEqual([])
+    expect(h.store.snapshots()).toEqual([])
+    expect(h.notices).toHaveLength(1)
+    expect(h.notices[0]?.text).toContain('auto')
+    expect(h.notices[0]?.text).toContain('server backends')
+  })
+
+  it('auto + unknown backend fails open to the conservative answer (no spawn)', async () => {
+    const h = makeHarness({
+      watch: 'auto',
+      detectBackend: () => null,
+      isIndexed: () => true,
+    })
+    sessionStart(h.handlers)
+    await verified(h)
+
+    expect(h.calls).toEqual([])
+  })
+
+  it('auto + unindexed workspace never spawns and never creates an index (consent model intact)', async () => {
+    const h = makeHarness({
+      watch: 'auto',
+      detectBackend: () => 'falkordb-remote',
+      isIndexed: () => false,
+    })
+    sessionStart(h.handlers, '/repo', { notify: (t, ty) => h.notices.push({ text: t, type: ty }) })
+    await verified(h)
+
+    expect(h.calls).toEqual([]) // no watcher AND no initial scan/index spawn
+    expect(h.store.snapshots()).toEqual([])
+    expect(h.notices).toHaveLength(1)
+    expect(h.notices[0]?.text).toContain('not indexed')
+  })
+
+  it('auto with no detector wired resolves to the conservative no-spawn', async () => {
+    const h = makeHarness({ watch: 'auto', isIndexed: () => true })
+    sessionStart(h.handlers)
+    await verified(h)
+
+    expect(h.calls).toEqual([])
+  })
+
+  it('auto decline notices fire once per session (latched, no notice storm)', async () => {
+    const h = makeHarness({
+      watch: 'auto',
+      detectBackend: () => 'neo4j',
+      isIndexed: () => false,
+    })
+    sessionStart(h.handlers, '/repo', { notify: (t, ty) => h.notices.push({ text: t, type: ty }) })
+    await verified(h)
+    expect(h.notices).toHaveLength(1)
+
+    // A second session start on the same session does not re-notify.
+    sessionStart(h.handlers)
+    await verified(h)
+    expect(h.notices).toHaveLength(1)
+  })
+
+  it('auto backend detection is cached per session (one detector call)', async () => {
+    let detections = 0
+    const h = makeHarness({
+      watch: 'auto',
+      isIndexed: () => true,
+      detectBackend: () => {
+        detections += 1
+        return 'neo4j'
+      },
+    })
+    sessionStart(h.handlers)
+    await verified(h)
+    sessionStart(h.handlers) // same session, re-entrant start attempt
+    await verified(h)
+
+    expect(detections).toBe(1)
   })
 })
 
@@ -1216,7 +1392,15 @@ describe('watcher teardown on every cleanup path (task 3.3: real runner)', () =>
       // shutdown sweep runs before the observer's store reset.
       const api = new RecordingExtensionApi()
       const handle = installProcessCleanup(runner, { api })
-      const observer = new FreshnessDriftObserver({ store, runner, watch: true, api })
+      const observer = new FreshnessDriftObserver({
+        store,
+        runner,
+        watch: 'on',
+        // The real runner path needs a real (small) verification window: the
+        // child must survive it before the fresh record lands.
+        watcherLivenessMs: 50,
+        api,
+      })
       observer.register()
 
       api.emit('session_start', {}, { cwd: dir })
@@ -1238,5 +1422,109 @@ describe('watcher teardown on every cleanup path (task 3.3: real runner)', () =>
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+/**
+ * The bounded backend-detection helper (design D2 of
+ * add-freshness-watch-tri-state): CGC's own precedence order, time-bounded
+ * doctor probe, .env fallback, fail-open to unknown (conservative embedded).
+ */
+describe('backend detection (add-freshness-watch-tri-state design D2)', () => {
+  it('isServerBackend accepts only the server backends, conservatively rejecting unknown', () => {
+    expect(isServerBackend('neo4j')).toBe(true)
+    expect(isServerBackend('falkordb-remote')).toBe(true)
+    expect(isServerBackend('  NEO4J  ')).toBe(true)
+    expect(isServerBackend('kuzudb')).toBe(false)
+    expect(isServerBackend('falkordb')).toBe(false)
+    expect(isServerBackend('ladybugdb')).toBe(false)
+    expect(isServerBackend('nornic')).toBe(false)
+    expect(isServerBackend('')).toBe(false)
+    expect(isServerBackend(null)).toBe(false)
+    expect(isServerBackend(undefined)).toBe(false)
+  })
+
+  it('parseDoctorBackend reads the Default database line CGC doctor prints', () => {
+    const doctor = [
+      '2. Checking Database Connection...',
+      'Loaded configuration from: /home/u/.codegraphcontext/.env',
+      '   Default database: neo4j (source: /home/u/.codegraphcontext/.env)',
+      '   ✓ Port 7687 is reachable',
+    ].join('\n')
+    expect(parseDoctorBackend(doctor)).toBe('neo4j')
+    expect(parseDoctorBackend('   Default database: KuzuDB (source: auto-detect)')).toBe('kuzudb')
+    expect(parseDoctorBackend('no database line here')).toBeNull()
+    expect(parseDoctorBackend('')).toBeNull()
+  })
+
+  it('parseEnvFileBackend reads DATABASE_TYPE/DEFAULT_DATABASE with quotes and comments', () => {
+    expect(parseEnvFileBackend('DATABASE_TYPE=neo4j\n')).toBe('neo4j')
+    expect(parseEnvFileBackend('DEFAULT_DATABASE="falkordb-remote"\n')).toBe('falkordb-remote')
+    expect(parseEnvFileBackend('# comment\nDATABASE_TYPE = kuzudb\n')).toBe('kuzudb')
+    expect(parseEnvFileBackend('DATABASE_TYPE=neo4j\nDEFAULT_DATABASE=falkordb\n')).toBe('falkordb') // last wins
+    expect(parseEnvFileBackend('NEO4J_URI=neo4j://host:7687\n')).toBeNull()
+    expect(parseEnvFileBackend('')).toBeNull()
+  })
+
+  it('detectCgcBackend prefers the runtime env overrides, then doctor, then .env, then null', async () => {
+    // 1: CGC's runtime override wins outright.
+    expect(
+      await detectCgcBackend({
+        env: { CGC_RUNTIME_DB_TYPE: 'falkordb-remote', DATABASE_TYPE: 'kuzudb' },
+        probe: async () => {
+          throw new Error('probe must not run for explicit env')
+        },
+      }),
+    ).toBe('falkordb-remote')
+
+    // 2: process-level DATABASE_TYPE next.
+    expect(
+      await detectCgcBackend({
+        env: { DATABASE_TYPE: 'neo4j' },
+        probe: async () => {
+          throw new Error('probe must not run for explicit env')
+        },
+      }),
+    ).toBe('neo4j')
+
+    // 3: the doctor probe (bounded) resolves the full chain.
+    expect(
+      await detectCgcBackend({
+        env: {},
+        probe: async () => '   Default database: falkordb-remote (source: context (main))',
+      }),
+    ).toBe('falkordb-remote')
+
+    // 4: the .env fallback when doctor fails.
+    expect(
+      await detectCgcBackend({
+        env: {},
+        probe: async () => null,
+        readTextFile: () => 'DATABASE_TYPE="neo4j"\n',
+      }),
+    ).toBe('neo4j')
+
+    // 5: unknown fails open — the conservative embedded answer.
+    expect(
+      await detectCgcBackend({
+        env: {},
+        probe: async () => null,
+        readTextFile: () => undefined,
+      }),
+    ).toBeNull()
+  })
+
+  it('detectCgcBackend never throws on a failing probe or reader (fail-open)', async () => {
+    expect(
+      await detectCgcBackend({
+        env: {},
+        probe: async () => {
+          throw new Error('doctor exploded')
+        },
+        readTextFile: () => {
+          throw new Error('fs exploded')
+        },
+      }),
+    ).toBeNull()
   })
 })

@@ -405,8 +405,11 @@ describe('LifecycleGate state routing (task 3.2)', () => {
     const outcome = await gate.evaluate(cwd)
 
     expect(outcome.state).toBe('unindexed')
-    expect(notices.length).toBe(1)
-    expect(notices[0]).toContain('autoCreate')
+    // The consent-gate unindexed notice is NOT forwarded to the external sink:
+    // the status HUD owns the user-facing one-time warning (the gray duplicate
+    // suppression — the unindexed-notice-dedupe change). The state record and
+    // the no-indexing guarantee are unchanged.
+    expect(notices.length).toBe(0)
     expect(gate.snapshot(cwd)?.lastAction?.kind).toBe('unindexed-notice')
     expect(runner.calls.some((c) => c.args[0] === 'index')).toBe(false)
   })
@@ -606,7 +609,9 @@ describe('LifecycleGate session lifecycle', () => {
 
     handlers.get('session_start')?.({ type: 'session_start' }, { cwd })
     await gate.whenEvaluated(cwd)
-    expect(gate.notices().length).toBe(1)
+    // The unindexed notice is suppressed at the sink (the HUD owns the warning);
+    // the gate's notice log stays empty but the state record is intact.
+    expect(gate.notices().length).toBe(0)
     expect(gate.snapshot(cwd)).not.toBeNull()
 
     handlers.get('session_shutdown')?.({ type: 'session_shutdown', reason: 'quit' }, {})

@@ -1122,8 +1122,16 @@ export class LifecycleGate {
         autoCreate: this.config.lifecycle.autoCreate,
         budget,
         indexTimeoutMs: this.config.cgc.maintenanceTimeoutMs,
-        onNotice: (notice: UnindexedNotice) =>
-          this.forwardNotice(session, noticeTypeFor(notice.kind), notice.text),
+        // The consent-gate unindexed notice is NOT forwarded: the status HUD
+        // owns the user-facing one-time warning (the same guidance plus the
+        // continuation line), and forwarding it here duplicates the message
+        // (the HUD's yellow warning vs this path's gray info render). The
+        // consented paths (indexing-started/degraded) keep forwarding — the
+        // HUD has no equivalent for those.
+        onNotice: (notice: UnindexedNotice) => {
+          if (notice.kind === 'unindexed') return
+          this.forwardNotice(session, noticeTypeFor(notice.kind), notice.text)
+        },
       }),
       drift: new DriftPath({
         runner: this.runner,

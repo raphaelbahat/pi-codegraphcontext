@@ -241,6 +241,7 @@ export function buildUnindexedWarning(cwd: string): string {
   return [
     `CGC: the workspace at ${cwd} has no code index, so graph queries will return empty or failed results.`,
     'Index creation is opt-in and was not performed. To enable it, set "lifecycle": { "autoCreate": true } in .pi/cgc.json (project) or ~/.pi/agent/cgc.json (global), or CGC_LIFECYCLE_AUTO_CREATE=1 — indexing then starts automatically in the background at session start. To index once without opting in, run `cgc index .` in the workspace.',
+    'This session continues without an index; you will not be asked again.',
   ].join('\n')
 }
 

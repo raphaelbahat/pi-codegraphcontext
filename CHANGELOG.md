@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.0...v0.9.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* dedupe the unindexed notice — the status HUD owns the user-facing warning (now including the continuation line); the gate's gray info duplicate is suppressed at the forward ([5aae829](https://github.com/raphaelbahat/pi-codegraphcontext/commit/5aae82947766ce1a6ee2c79f98b312ede5fa18cd))
+
 ## [0.9.0](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.8.3...v0.9.0) (2026-09-20)
 
 

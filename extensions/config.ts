@@ -12,8 +12,8 @@
 // as warnings; `loadConfig` never throws.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 
 export interface ApiConfig {
   /**
@@ -234,6 +234,12 @@ export interface LoadConfigOptions {
   cwd?: string
   /** Home directory for the global config file; defaults to `os.homedir()`. */
   homeDir?: string
+  /**
+   * The transient-storage boundary for global-config resolution; defaults to
+   * `os.tmpdir()`. A `PI_CODING_AGENT_DIR` pointing inside it is treated as a
+   * launch-scoped projection root (see {@link resolveGlobalConfigHome}).
+   */
+  tmpDir?: string
 }
 
 export const DEFAULT_CONFIG: ExtensionConfig = {
@@ -1078,7 +1084,7 @@ function loadConfigWithFileWinnersInternal(options: LoadConfigOptions): {
   // global file lives in Pi's agent directory — PI_CODING_AGENT_DIR overrides
   // the default ~/.pi/agent (tilde-expanded), matching pi's own resolution.
   const globalFile = readConfigFile(
-    resolveGlobalConfigPath(homeDir, options.env),
+    resolveGlobalConfigPath(homeDir, options.env, options.tmpDir),
     'config',
     warnings,
   )
@@ -1144,14 +1150,67 @@ export function resolveProjectConfigPath(cwd: string): string {
 }
 
 /**
- * The global config file path (`<agent-dir>/cgc.json`), via the shipped
- * `resolvePiAgentDir` (PI_CODING_AGENT_DIR-aware).
+ * True when `dir` lives inside the OS temporary directory — a per-launch
+ * projection root rather than durable user storage. Launchers such as
+ * Outfitter point `PI_CODING_AGENT_DIR` at a `mkdtemp` root and delete it
+ * when the run exits, so anything written there does not survive.
+ */
+export function isTransientDir(dir: string, tmpDir: string = tmpdir()): boolean {
+  const normalize = (value: string): string => resolve(value).replace(/\/+$/, '')
+  const candidate = normalize(dir)
+  const temporary = normalize(tmpDir)
+  return candidate === temporary || candidate.startsWith(`${temporary}/`)
+}
+
+/** Where the global `cgc.json` lives, and whether that home persists. */
+export interface GlobalConfigHome {
+  /** Absolute directory holding the global `cgc.json`. */
+  dir: string
+  /** True when `dir` survives across launches. */
+  durable: boolean
+  /** Why this directory was chosen. */
+  source: 'pi-agent-dir' | 'durable-agent-dir' | 'explicit-override'
+}
+
+/**
+ * Resolve the global config home. The agent directory (`PI_CODING_AGENT_DIR`,
+ * else `~/.pi/agent`) is honored when it is durable storage. When a launcher
+ * points it at transient storage — Outfitter's per-run
+ * `/tmp/outfitter-coding-pi-*` projection, deleted at exit — the global config
+ * falls back to the durable `<home>/.pi/agent`, mirroring how Outfitter itself
+ * relocates pi's session store to keep `--continue` working across runs.
+ * `CGC_GLOBAL_CONFIG_DIR` forces an explicit directory.
+ */
+export function resolveGlobalConfigHome(
+  homeDir: string,
+  env: Record<string, string | undefined> = process.env,
+  tmpDir: string = tmpdir(),
+): GlobalConfigHome {
+  const explicit = env.CGC_GLOBAL_CONFIG_DIR
+  if (explicit !== undefined && explicit.trim().length > 0) {
+    const trimmed = explicit.trim()
+    const dir = trimmed.startsWith('~') ? join(homeDir, trimmed.slice(1)) : trimmed
+    return { dir, durable: !isTransientDir(dir, tmpDir), source: 'explicit-override' }
+  }
+  const overridden = (env.PI_CODING_AGENT_DIR ?? '').trim().length > 0
+  const agentDir = resolvePiAgentDir(homeDir, env)
+  if (overridden && isTransientDir(agentDir, tmpDir)) {
+    return { dir: join(homeDir, '.pi', 'agent'), durable: true, source: 'durable-agent-dir' }
+  }
+  return { dir: agentDir, durable: !isTransientDir(agentDir, tmpDir), source: 'pi-agent-dir' }
+}
+
+/**
+ * The global config file path (`<global-config-home>/cgc.json`). Uses
+ * {@link resolveGlobalConfigHome}, so a launch-scoped agent directory never
+ * becomes the home for settings the user expects to persist.
  */
 export function resolveGlobalConfigPath(
   homeDir: string,
   env: Record<string, string | undefined> = process.env,
+  tmpDir?: string,
 ): string {
-  return join(resolvePiAgentDir(homeDir, env), 'cgc.json')
+  return join(resolveGlobalConfigHome(homeDir, env, tmpDir).dir, 'cgc.json')
 }
 
 /** Typed refusals of {@link mergeConfigEdits}; every one leaves the file unmodified. */

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.5](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.4...v0.9.5) (2026-10-10)
+
+
+### Bug Fixes
+
+* match ctrl+s through pi-tui's key layer (it arrived as an escape sequence, not 0x13) ([f5cc9e3](https://github.com/raphaelbahat/pi-codegraphcontext/commit/f5cc9e30844d649d526f472085cb472789b5064f))
+
 ## [0.9.4](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.3...v0.9.4) (2026-10-10)
 
 

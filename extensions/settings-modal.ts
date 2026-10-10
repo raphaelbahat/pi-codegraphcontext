@@ -33,6 +33,7 @@ import {
   Box,
   Container,
   Input,
+  matchesKey,
   type SelectItem,
   SelectList,
   type SettingItem,
@@ -506,9 +507,17 @@ export function renderHeadlessSettings(
 const SAVE_TARGET_ITEM_ID = '__cgc_save_target'
 const SAVE_CHANGES_ITEM_ID = '__cgc_save_changes'
 /** ctrl+s — the explicit save key inside the modal (ESC closes without saving). */
-const SAVE_KEY = '\u0013'
+/**
+ * The save shortcut, matched through pi-tui's key layer. A raw byte comparison
+ * (`data === '\u0013'`) only works for legacy terminals: terminals that negotiate
+ * an extended keyboard protocol (the Kitty CSI-u form, or xterm modifyOtherKeys —
+ * Windows Terminal does) deliver ctrl+s as an escape SEQUENCE, so the raw compare
+ * silently missed it while every other key still worked. `matchesKey` handles all
+ * three encodings.
+ */
+const SAVE_KEY_ID = 'ctrl+s'
 /** Human label for the save key (shown in the help line and the save row). */
-const SAVE_KEY_LABEL = 'ctrl+s'
+const SAVE_KEY_LABEL = SAVE_KEY_ID
 
 /**
  * Rounded box-drawing border characters, mirroring the spences10/my-pi
@@ -761,7 +770,7 @@ export function buildSettingsModalComponent(params: {
     render: (width: number) => renderFramedModal(framed, width, params.theme),
     invalidate: () => framed.invalidate(),
     handleInput: (data: string) => {
-      if (data === SAVE_KEY) {
+      if (matchesKey(data, SAVE_KEY_ID)) {
         params.onClose({
           kind: 'save',
           edits: [...staged].map(([key, value]) => ({ key, value })),

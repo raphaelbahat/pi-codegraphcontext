@@ -770,6 +770,33 @@ describe('buildSettingsModalComponent (the thin TUI composition, tasks 2.1/2.2)'
     expect(closed[0]?.edits).toEqual([])
   })
 
+  it('ctrl+s saves under every keyboard encoding (legacy byte, Kitty CSI-u, modifyOtherKeys)', () => {
+    // Regression: the modal compared the raw byte '\u0013'. Terminals that
+    // negotiate an extended keyboard protocol (Windows Terminal) send ctrl+s as
+    // an escape sequence instead, so the save silently never ran there while
+    // arrows/Enter still worked.
+    const encodings: Array<[string, string]> = [
+      ['legacy 0x13', '\u0013'],
+      ['Kitty CSI-u', '\u001b[115;5u'],
+      ['xterm modifyOtherKeys', '\u001b[27;5;115~'],
+    ]
+    for (const [label, data] of encodings) {
+      const closed: SettingsModalOutcome[] = []
+      const rows = buildSettingsRows(makeLoaded(), {}).filter(
+        (row) => row.key === 'lifecycle.autoCreate',
+      )
+      const component = build(rows, closed.push.bind(closed))
+
+      component.handleInput('\x1b[B') // Save changes
+      component.handleInput('\x1b[B') // ...then the boolean row
+      component.handleInput('\r') // stage the flip
+      component.handleInput(data) // ctrl+s in this encoding
+
+      expect(closed, label).toHaveLength(1)
+      expect(closed[0]?.kind, label).toBe('save')
+    }
+  })
+
   it('a "Save changes" row saves on Enter — no ctrl+s required (key-independent save)', () => {
     // ctrl+s is not deliverable in every terminal (flow control can swallow it),
     // and a save that silently does nothing is the worst failure. The row gives

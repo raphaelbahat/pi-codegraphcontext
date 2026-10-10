@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.3...v0.9.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* add a key-independent `Save changes` row to the /cgc config modal ([bed9e25](https://github.com/raphaelbahat/pi-codegraphcontext/commit/bed9e252d2de5e1a9e6a154a460b551f29d0cd02))
+
 ## [0.9.3](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.2...v0.9.3) (2026-10-10)
 
 

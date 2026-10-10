@@ -504,8 +504,11 @@ export function renderHeadlessSettings(
 // ---------------------------------------------------------------------------
 
 const SAVE_TARGET_ITEM_ID = '__cgc_save_target'
+const SAVE_CHANGES_ITEM_ID = '__cgc_save_changes'
 /** ctrl+s — the explicit save key inside the modal (ESC closes without saving). */
 const SAVE_KEY = '\u0013'
+/** Human label for the save key (shown in the help line and the save row). */
+const SAVE_KEY_LABEL = 'ctrl+s'
 
 /**
  * Rounded box-drawing border characters, mirroring the spences10/my-pi
@@ -679,6 +682,17 @@ export function buildSettingsModalComponent(params: {
         },
       ]),
     },
+    {
+      id: SAVE_CHANGES_ITEM_ID,
+      label: 'Save changes',
+      description: `write the staged edits to the save target (${SAVE_KEY_LABEL} does the same)`,
+      currentValue: 'enter',
+      // A single-value cycle: Enter on this row fires onChange, which saves.
+      // This exists because ctrl+s is not deliverable in every terminal
+      // (flow control can swallow it), and a save that silently does nothing
+      // is the worst possible failure.
+      values: ['save'],
+    },
     ...params.rows.map(
       (row): SettingItem => ({
         id: row.key,
@@ -699,6 +713,14 @@ export function buildSettingsModalComponent(params: {
     Math.min(items.length + 2, 15),
     modalSettingsListTheme(),
     (id: string, newValue: string) => {
+      if (id === SAVE_CHANGES_ITEM_ID) {
+        params.onClose({
+          kind: 'save',
+          edits: [...staged].map(([key, value]) => ({ key, value })),
+          target,
+        })
+        return
+      }
       if (id === SAVE_TARGET_ITEM_ID) {
         target = newValue === 'global' ? 'global' : 'project'
         // Keep the displayed target in lockstep with the value ctrl+s sends.
@@ -721,7 +743,7 @@ export function buildSettingsModalComponent(params: {
     new Text(
       params.theme.fg(
         'dim',
-        'type to search • enter edit • esc close (discard) • ctrl+s save — changes apply at the next session start',
+        `type to search • enter edit • esc close (discard) • ${SAVE_KEY_LABEL} or "Save changes" saves — changes apply at the next session start`,
       ),
       0,
       0,

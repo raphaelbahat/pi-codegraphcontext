@@ -673,9 +673,11 @@ describe('buildSettingsModalComponent (the thin TUI composition, tasks 2.1/2.2)'
     const text = component.render(120).join('\n')
     expect(text).toContain('CGC settings')
     expect(text).toContain('Save target')
-    expect(text).toContain('next session start')
-    // The list caps its visible window; assert the rows it shows.
-    for (const row of rows.slice(0, 13)) {
+    // The help line wraps at this width, so assert the phrase up to the break.
+    expect(text).toContain('changes apply at the next')
+    // The list caps its visible window (the target row + Save changes + the keys);
+    // assert the rows it shows.
+    for (const row of rows.slice(0, 12)) {
       expect(text).toContain(row.key)
     }
     expect(closed).toEqual([])
@@ -768,15 +770,34 @@ describe('buildSettingsModalComponent (the thin TUI composition, tasks 2.1/2.2)'
     expect(closed[0]?.edits).toEqual([])
   })
 
-  it('cycling a boolean stages the flipped value and ctrl+s emits it as a save (D1/D4)', () => {
+  it('a "Save changes" row saves on Enter — no ctrl+s required (key-independent save)', () => {
+    // ctrl+s is not deliverable in every terminal (flow control can swallow it),
+    // and a save that silently does nothing is the worst failure. The row gives
+    // the same outcome with a plain Enter.
     const closed: SettingsModalOutcome[] = []
-    // Exactly the rows the render can show: the target row plus the boolean,
-    // so the first down-arrow lands on the boolean deterministically.
     const rows = buildSettingsRows(makeLoaded(), {}).filter(
       (row) => row.key === 'lifecycle.autoCreate',
     )
     const component = build(rows, closed.push.bind(closed))
 
+    component.handleInput('\x1b[B') // Save changes is the second row
+    component.handleInput('\r') // Enter activates it
+
+    expect(closed).toHaveLength(1)
+    expect(closed[0]?.kind).toBe('save')
+    expect(closed[0]?.target).toBe('project')
+  })
+
+  it('cycling a boolean stages the flipped value and ctrl+s emits it as a save (D1/D4)', () => {
+    const closed: SettingsModalOutcome[] = []
+    // The list starts on 'Save target'; 'Save changes' is the next row, then the
+    // boolean — so two down-arrows land on the boolean deterministically.
+    const rows = buildSettingsRows(makeLoaded(), {}).filter(
+      (row) => row.key === 'lifecycle.autoCreate',
+    )
+    const component = build(rows, closed.push.bind(closed))
+
+    component.handleInput('\x1b[B') // down arrow: Save changes
     component.handleInput('\x1b[B') // down arrow: select the boolean row
     component.handleInput('\r') // enter: cycles off -> on, stages it
     component.handleInput('\u0013') // ctrl+s: save

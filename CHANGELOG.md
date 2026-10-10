@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.1...v0.9.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* /cgc config target display + durable global config under launcher-scoped agent dirs ([d2ed211](https://github.com/raphaelbahat/pi-codegraphcontext/commit/d2ed2114c0d40b426ba7f64b4afb565ebae2bcee))
+
 ## [0.9.1](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.0...v0.9.1) (2026-09-22)
 
 

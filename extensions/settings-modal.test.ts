@@ -41,6 +41,7 @@ import {
   saveSettingsEdits,
   settingsSourceAnnotation,
   settingValueText,
+  shortenPathForDisplay,
   validateSettingValue,
   validationRuleText,
 } from './settings-modal'
@@ -695,7 +696,9 @@ describe('buildSettingsModalComponent (the thin TUI composition, tasks 2.1/2.2)'
     component.handleInput('\r') // confirm it
 
     const text = component.render(120).join('\n')
-    expect(text).toContain('save target: global — /home/u/.pi/agent/cgc.json')
+    // Long paths display with their tail kept (…/u/.pi/agent/cgc.json), so the
+    // two targets stay distinguishable in a narrow list cell.
+    expect(text).toContain('save target: global — …/.pi/agent/cgc.json')
     expect(text).not.toContain('save target: project')
 
     component.handleInput('\u0013') // ctrl+s
@@ -982,6 +985,21 @@ describe('openCgcSettings (the fail-open command entry point, D1–D5)', () => {
   })
 })
 
+describe('shortenPathForDisplay (readable targets in narrow list cells)', () => {
+  it('keeps the identifying tail so the two targets stay distinguishable', () => {
+    expect(shortenPathForDisplay('/home/bahat/projects/pi-weft/.pi/cgc.json')).toBe(
+      '…/pi-weft/.pi/cgc.json',
+    )
+    expect(shortenPathForDisplay('/home/bahat/.pi/agent/cgc.json')).toBe('…/.pi/agent/cgc.json')
+  })
+
+  it('leaves already-short paths untouched, and honors keepSegments', () => {
+    expect(shortenPathForDisplay('/ws/.pi/cgc.json')).toBe('/ws/.pi/cgc.json')
+    expect(shortenPathForDisplay('/a/b/c/d', 2)).toBe('…/c/d')
+    expect(shortenPathForDisplay('/a/b/c/d', 4)).toBe('/a/b/c/d')
+  })
+})
+
 describe('ADR boundary (task 3.3: no tools, no spawns, writes confined to the two config targets)', () => {
   it('the settings module registers no tools, spawns nothing, and imports no runner (source scan)', async () => {
     const { readFileSync: readSource } = await import('node:fs')
@@ -989,6 +1007,28 @@ describe('ADR boundary (task 3.3: no tools, no spawns, writes confined to the tw
     expect(source).not.toMatch(/\bregisterTool\b/)
     expect(source).not.toMatch(/spawnSync|execSync|Bun\.spawn|node:child_process/)
     expect(source).not.toMatch(/from '\.\/runner'/)
+  })
+
+  it('creates a missing target file with no dialog surface (an explicit save is the consent)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cgc-settings-create-'))
+    try {
+      const surface = makeCustomSurface({
+        kind: 'save',
+        edits: [{ key: 'lifecycle.autoCreate', value: true }],
+        target: 'project',
+      })
+      // NOTE: no ui.confirm on this context — the modal save must not depend on it.
+      const { ctx } = makeTuiContext({ dir, ui: { custom: surface.custom } })
+
+      await openCgcSettings(ctx, { homeDir: dir, env: cleanEnv() })
+
+      expect(existsSync(resolveProjectConfigPath(dir))).toBe(true)
+      expect(JSON.parse(readFileSync(resolveProjectConfigPath(dir), 'utf8'))).toEqual({
+        lifecycle: { autoCreate: true },
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('a full save flow touches only the chosen config file — an unrelated sentinel file is untouched', async () => {

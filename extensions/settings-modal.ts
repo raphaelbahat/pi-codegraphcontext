@@ -337,6 +337,20 @@ export function globalTargetNote(
   return undefined
 }
 
+/**
+ * Shorten a filesystem path for display inside narrow TUI columns, keeping the
+ * TAIL visible — the segments that actually identify the file. A long absolute
+ * path rendered into a list cell used to truncate from the right, so
+ * `/home/bahat/projects/pi-weft/.pi/cgc.json` and
+ * `/home/bahat/.pi/agent/cgc.json` both collapsed to an indistinguishable
+ * `/home/bahat/…`-style prefix.
+ */
+export function shortenPathForDisplay(path: string, keepSegments = 3): string {
+  const segments = path.split('/').filter((segment) => segment.length > 0)
+  if (segments.length <= keepSegments) return path
+  return `…/${segments.slice(-keepSegments).join('/')}`
+}
+
 /** The two config-file paths the modal saves between. */
 export function resolveTargetPaths(
   cwd: string,
@@ -397,7 +411,11 @@ export type SettingsSaveResult =
  */
 export async function saveSettingsEdits(request: SettingsSaveRequest): Promise<SettingsSaveResult> {
   if (request.edits.length === 0) {
-    return { ok: false, message: 'cgc config: no edits were staged; nothing was written.' }
+    return {
+      ok: false,
+      message:
+        'cgc config: no edits were staged — change a value first, then ctrl+s saves; nothing was written.',
+    }
   }
   for (const edit of request.edits) {
     const validated = validateSettingValue(edit.key, edit.value)
@@ -438,7 +456,7 @@ export async function saveSettingsEdits(request: SettingsSaveRequest): Promise<S
     ok: true,
     path: result.path,
     message:
-      `cgc config: saved ${result.writtenKeys.length} edit(s) to the ${request.target} config file ${result.path}. ` +
+      `cgc config: ${createIfMissing ? 'created' : 'saved'} ${result.writtenKeys.length} edit(s) in the ${request.target} config file ${result.path}. ` +
       'Changes apply at the next session start — this running session keeps its current behavior.',
   }
 }
@@ -561,7 +579,7 @@ export function buildSettingsModalComponent(params: {
   // The save-target line is LIVE (not a one-time snapshot): every target
   // change re-renders it, so the path shown is always the path ctrl+s writes.
   const targetPathFor = (which: ConfigFileTarget): string =>
-    which === 'project' ? params.paths.project : params.paths.global
+    shortenPathForDisplay(which === 'project' ? params.paths.project : params.paths.global)
   const targetNoteFor = (which: ConfigFileTarget): string =>
     which === 'global' && params.paths.globalNote !== undefined ? ` ${params.paths.globalNote}` : ''
   const targetLineFor = (which: ConfigFileTarget): string =>
@@ -646,17 +664,17 @@ export function buildSettingsModalComponent(params: {
     {
       id: SAVE_TARGET_ITEM_ID,
       label: 'Save target',
-      description: `where staged edits are written — project ${params.paths.project} or global ${params.paths.global}${targetNoteFor('global')}`,
+      description: `where staged edits are written — project ${shortenPathForDisplay(params.paths.project)} or global ${shortenPathForDisplay(params.paths.global)}${targetNoteFor('global')}`,
       currentValue: target,
       submenu: selectPickerSubmenu('Save to which config file?', [
         {
           value: 'project',
-          label: `project — ${params.paths.project}`,
+          label: `project — ${shortenPathForDisplay(params.paths.project)}`,
           description: 'this workspace (wins the layering here)',
         },
         {
           value: 'global',
-          label: `global — ${params.paths.global}${targetNoteFor('global')}`,
+          label: `global — ${shortenPathForDisplay(params.paths.global)}${targetNoteFor('global')}`,
           description: 'cross-project defaults',
         },
       ]),
@@ -877,28 +895,13 @@ async function applyModalOutcome(
     cwd: session.cwd,
     homeDir: session.homeDir,
     env: session.env,
-    confirmCreate: () =>
-      confirmDialog(
-        ctx,
-        'Create the config file?',
-        `The ${outcome.target} config file ${resolveTargetPath(outcome.target, session.cwd, session.homeDir, session.env)} does not exist yet. Create it with the staged edits?` +
-          (outcome.target === 'global' && session.paths.globalNote !== undefined
-            ? ` ${session.paths.globalNote}`
-            : ''),
-      ),
+    // An explicit ctrl+s on a chosen target IS the consent to create the file:
+    // the modal shows the target it will write (live line) and the notice names
+    // the created file. Requiring a second confirmation produced silent no-writes
+    // (the confirm never appeared for the reporter of this bug).
+    confirmCreate: () => true,
   })
   notifyOnce(ctx, result.message, result.ok ? 'info' : 'warning')
-}
-
-/** Guarded dialog seams (the dialogs fallback and the create-file confirm). */
-async function confirmDialog(
-  ctx: ExtensionCommandContext,
-  title: string,
-  message: string,
-): Promise<boolean> {
-  const ui = ctx.ui as { confirm?: (title: string, message: string) => Promise<boolean> }
-  if (typeof ui.confirm !== 'function') return false
-  return (await ui.confirm(title, message)) === true
 }
 
 /**
@@ -983,12 +986,9 @@ async function runDialogFlow(
       cwd: session.cwd,
       homeDir: session.homeDir,
       env: session.env,
-      confirmCreate: () =>
-        confirmDialog(
-          ctx,
-          'Create the config file?',
-          `${resolveTargetPath(target, session.cwd, session.homeDir, session.env)} does not exist yet. Create it with the staged edits?`,
-        ),
+      // The dialog flow already asked "Save staged edits?" and the user chose
+      // the target explicitly — creating the file is that same consent.
+      confirmCreate: () => true,
     })
     notifyOnce(ctx, result.message, result.ok ? 'info' : 'warning')
     return

@@ -1216,6 +1216,8 @@ describe('PI_CODING_AGENT_DIR-aware global config resolution', () => {
         env: cleanEnv({ PI_CODING_AGENT_DIR: agentDir }),
         cwd: '/nonexistent',
         homeDir: '/nonexistent',
+        // A durable agent dir (outside the temp boundary) is honored verbatim.
+        tmpDir: join(agentDir, 'not-the-temp-boundary'),
       })
       expect(result.config.guidance.routingSkill).toBe(false)
       expect(result.sources['guidance.routingSkill']).toBe('config-file')
@@ -1236,6 +1238,8 @@ describe('PI_CODING_AGENT_DIR-aware global config resolution', () => {
         env: cleanEnv({ PI_CODING_AGENT_DIR: '~/my-agent' }),
         cwd: '/nonexistent',
         homeDir: home,
+        // Durable boundary: the tilde-expanded override is honored verbatim.
+        tmpDir: join(home, 'not-the-temp-boundary'),
       })
       expect(result.config.tools.cliGap.enabled).toBe(false)
       expect(result.sources['tools.cliGap.enabled']).toBe('config-file')

@@ -475,10 +475,36 @@ describe('mergeConfigEdits + saveSettingsEdits (tasks 1.2/2.3: never-clobber, la
         cwd: '/nonexistent',
         homeDir: home,
         env: cleanEnv({ PI_CODING_AGENT_DIR: join(home, 'agent') }),
+        // Durable boundary: a permanent agent dir is written verbatim.
+        tmpDir: join(home, 'not-the-temp-boundary'),
         confirmCreate: () => true,
       })
       expect(result.ok).toBe(true)
       expect(existsSync(join(home, 'agent', 'cgc.json'))).toBe(true)
+
+      // A launch-scoped agent dir (inside the temp boundary, e.g. Outfitter's
+      // per-run projection) is NOT used for durable settings: the save lands in
+      // the durable <home>/.pi/agent instead, so it survives the run.
+      const redirected = await saveSettingsEdits({
+        edits: [{ key: 'output.maxBytes', value: 8_192 }],
+        target: 'global',
+        cwd: '/nonexistent',
+        homeDir: home,
+        env: cleanEnv({ PI_CODING_AGENT_DIR: join(home, 'launch-scoped') }),
+        tmpDir: home,
+        confirmCreate: () => true,
+      })
+      expect(redirected.ok).toBe(true)
+      expect(existsSync(join(home, '.pi', 'agent', 'cgc.json'))).toBe(true)
+      expect(existsSync(join(home, 'launch-scoped', 'cgc.json'))).toBe(false)
+      expect(
+        resolveTargetPaths(
+          '/ws',
+          home,
+          cleanEnv({ PI_CODING_AGENT_DIR: join(home, 'launch-scoped') }),
+          home,
+        ).globalNote,
+      ).toContain('durable')
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
@@ -652,6 +678,30 @@ describe('buildSettingsModalComponent (the thin TUI composition, tasks 2.1/2.2)'
       expect(text).toContain(row.key)
     }
     expect(closed).toEqual([])
+  })
+
+  it('keeps the save-target line live: the displayed path follows the selected target', () => {
+    // Regression: pressing Enter on the highlighted "Save target" row opens its
+    // submenu, and choosing there used to switch the target while the header
+    // kept claiming the project path — so ctrl+s wrote a different file than
+    // the one displayed. The header must track the target.
+    const closed: SettingsModalOutcome[] = []
+    const component = build(buildSettingsRows(makeLoaded(), {}), closed.push.bind(closed))
+
+    expect(component.render(120).join('\n')).toContain('save target: project — /ws/.pi/cgc.json')
+
+    component.handleInput('\r') // open the Save target submenu (row is selected)
+    component.handleInput('\u001b[B') // move to the global entry
+    component.handleInput('\r') // confirm it
+
+    const text = component.render(120).join('\n')
+    expect(text).toContain('save target: global — /home/u/.pi/agent/cgc.json')
+    expect(text).not.toContain('save target: project')
+
+    component.handleInput('\u0013') // ctrl+s
+    expect(closed).toHaveLength(1)
+    expect(closed[0]?.kind).toBe('save')
+    expect(closed[0]?.target).toBe('global')
   })
 
   it('frames the content in a padded rounded box (the /context reference framing)', () => {

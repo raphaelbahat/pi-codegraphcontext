@@ -48,6 +48,7 @@ import {
   type ConfigResult,
   loadConfigWithFileWinners,
   mergeConfigEdits,
+  resolveGlobalConfigHome,
   resolveGlobalConfigPath,
   resolveProjectConfigPath,
   type ValueRule,
@@ -319,15 +320,35 @@ export function decideSettingsUi(caps: SettingsUiCapabilities): SettingsUiDecisi
   return 'readonly'
 }
 
+/**
+ * The durability note shown next to the global target: when the global config
+ * was redirected off a transient (launch-scoped) agent directory, or when an
+ * explicit override still points at one, the modal says so instead of
+ * presenting a path that silently disappears.
+ */
+export function globalTargetNote(
+  homeDir: string,
+  env: Record<string, string | undefined> = process.env,
+  tmpDir?: string,
+): string | undefined {
+  const home = resolveGlobalConfigHome(homeDir, env, tmpDir)
+  if (home.source === 'durable-agent-dir') return '(durable — the launch dir is temporary)'
+  if (!home.durable) return '(this launch only)'
+  return undefined
+}
+
 /** The two config-file paths the modal saves between. */
 export function resolveTargetPaths(
   cwd: string,
   homeDir: string,
   env: Record<string, string | undefined> = process.env,
-): { project: string; global: string } {
+  tmpDir?: string,
+): { project: string; global: string; globalNote?: string } {
+  const note = globalTargetNote(homeDir, env, tmpDir)
   return {
     project: resolveProjectConfigPath(cwd),
-    global: resolveGlobalConfigPath(homeDir, env),
+    global: resolveGlobalConfigPath(homeDir, env, tmpDir),
+    ...(note === undefined ? {} : { globalNote: note }),
   }
 }
 
@@ -336,10 +357,11 @@ export function resolveTargetPath(
   cwd: string,
   homeDir: string,
   env: Record<string, string | undefined> = process.env,
+  tmpDir?: string,
 ): string {
   return target === 'project'
     ? resolveProjectConfigPath(cwd)
-    : resolveGlobalConfigPath(homeDir, env)
+    : resolveGlobalConfigPath(homeDir, env, tmpDir)
 }
 
 /** One staged edit: a config key and its validated value. */
@@ -354,6 +376,8 @@ export interface SettingsSaveRequest {
   cwd: string
   homeDir: string
   env?: Record<string, string | undefined>
+  /** Transient-storage boundary for the global target; defaults to `os.tmpdir()`. */
+  tmpDir?: string
   /**
    * Offered when the target file does not exist yet (design D2): return true
    * to create a fresh `{}` object; anything else refuses with nothing written.
@@ -384,14 +408,20 @@ export async function saveSettingsEdits(request: SettingsSaveRequest): Promise<S
       }
     }
   }
-  const targetPath = resolveTargetPath(request.target, request.cwd, request.homeDir, request.env)
+  const targetPath = resolveTargetPath(
+    request.target,
+    request.cwd,
+    request.homeDir,
+    request.env,
+    request.tmpDir,
+  )
   let createIfMissing = false
   if (!existsSync(targetPath)) {
     const confirmed = request.confirmCreate === undefined ? false : await request.confirmCreate()
     if (!confirmed) {
       return {
         ok: false,
-        message: `cgc config: ${targetPath} does not exist — save declined; nothing was written.`,
+        message: `cgc config: the ${request.target} config file ${targetPath} does not exist — save declined; nothing was written.`,
       }
     }
     createIfMissing = true
@@ -408,7 +438,7 @@ export async function saveSettingsEdits(request: SettingsSaveRequest): Promise<S
     ok: true,
     path: result.path,
     message:
-      `cgc config: saved ${result.writtenKeys.length} edit(s) to ${result.path}. ` +
+      `cgc config: saved ${result.writtenKeys.length} edit(s) to the ${request.target} config file ${result.path}. ` +
       'Changes apply at the next session start — this running session keeps its current behavior.',
   }
 }
@@ -425,7 +455,7 @@ export async function saveSettingsEdits(request: SettingsSaveRequest): Promise<S
  */
 export function renderHeadlessSettings(
   rows: readonly SettingsRow[],
-  paths: { project: string; global: string },
+  paths: { project: string; global: string; globalNote?: string },
   interactiveUnavailable = false,
 ): string {
   const width = rows.reduce((max, row) => Math.max(max, row.key.length), 0)
@@ -433,7 +463,9 @@ export function renderHeadlessSettings(
     ? ['cgc config: interactive settings UI is unavailable — effective settings (read-only):']
     : ['cgc config: effective settings (read-only outside the TUI)']
   lines.push(`project config: ${paths.project}`)
-  lines.push(`global config: ${paths.global}`)
+  lines.push(
+    `global config: ${paths.global}${paths.globalNote === undefined ? '' : ` ${paths.globalNote}`}`,
+  )
   for (const row of rows) {
     const source =
       row.source === 'env'
@@ -521,11 +553,24 @@ export function buildSettingsModalComponent(params: {
   theme: ModalTheme
   rows: readonly SettingsRow[]
   initialTarget: ConfigFileTarget
-  paths: { project: string; global: string }
+  paths: { project: string; global: string; globalNote?: string }
   onClose: (outcome: SettingsModalOutcome) => void
 }): { render(width: number): string[]; invalidate(): void; handleInput(data: string): void } {
   const staged = new Map<ConfigKey, boolean | number | string>()
   let target: ConfigFileTarget = params.initialTarget
+  // The save-target line is LIVE (not a one-time snapshot): every target
+  // change re-renders it, so the path shown is always the path ctrl+s writes.
+  const targetPathFor = (which: ConfigFileTarget): string =>
+    which === 'project' ? params.paths.project : params.paths.global
+  const targetNoteFor = (which: ConfigFileTarget): string =>
+    which === 'global' && params.paths.globalNote !== undefined ? ` ${params.paths.globalNote}` : ''
+  const targetLineFor = (which: ConfigFileTarget): string =>
+    `save target: ${which} — ${targetPathFor(which)}${targetNoteFor(which)}`
+  const targetText = new Text(params.theme.fg('muted', targetLineFor(target)), 1, 0)
+  const refreshTargetLine = (): void => {
+    targetText.setText(params.theme.fg('muted', targetLineFor(target)))
+    targetText.invalidate()
+  }
 
   const sourceDescription = (row: SettingsRow): string => {
     const rule = row.kind === 'readonly' ? undefined : `rule: ${validationRuleText(row.key)} —`
@@ -601,7 +646,7 @@ export function buildSettingsModalComponent(params: {
     {
       id: SAVE_TARGET_ITEM_ID,
       label: 'Save target',
-      description: `where staged edits are written — project ${params.paths.project} or global ${params.paths.global}`,
+      description: `where staged edits are written — project ${params.paths.project} or global ${params.paths.global}${targetNoteFor('global')}`,
       currentValue: target,
       submenu: selectPickerSubmenu('Save to which config file?', [
         {
@@ -611,7 +656,7 @@ export function buildSettingsModalComponent(params: {
         },
         {
           value: 'global',
-          label: `global — ${params.paths.global}`,
+          label: `global — ${params.paths.global}${targetNoteFor('global')}`,
           description: 'cross-project defaults',
         },
       ]),
@@ -638,6 +683,8 @@ export function buildSettingsModalComponent(params: {
     (id: string, newValue: string) => {
       if (id === SAVE_TARGET_ITEM_ID) {
         target = newValue === 'global' ? 'global' : 'project'
+        // Keep the displayed target in lockstep with the value ctrl+s sends.
+        refreshTargetLine()
         return
       }
       const validated = validateSettingValue(id as ConfigKey, newValue)
@@ -649,16 +696,7 @@ export function buildSettingsModalComponent(params: {
 
   const container = new Container()
   container.addChild(new Text(params.theme.fg('accent', params.theme.bold('CGC settings')), 1, 0))
-  container.addChild(
-    new Text(
-      params.theme.fg(
-        'muted',
-        `save target: ${target === 'project' ? params.paths.project : params.paths.global}`,
-      ),
-      1,
-      0,
-    ),
-  )
+  container.addChild(targetText)
   container.addChild(settingsList)
   const help = new Box(1, 0)
   help.addChild(
@@ -790,7 +828,7 @@ export async function openCgcSettings(
 
 interface SettingsSession {
   rows: SettingsRow[]
-  paths: { project: string; global: string }
+  paths: { project: string; global: string; globalNote?: string }
   homeDir: string
   env: Record<string, string | undefined>
   cwd: string
@@ -843,7 +881,10 @@ async function applyModalOutcome(
       confirmDialog(
         ctx,
         'Create the config file?',
-        `${resolveTargetPath(outcome.target, session.cwd, session.homeDir, session.env)} does not exist yet. Create it with the staged edits?`,
+        `The ${outcome.target} config file ${resolveTargetPath(outcome.target, session.cwd, session.homeDir, session.env)} does not exist yet. Create it with the staged edits?` +
+          (outcome.target === 'global' && session.paths.globalNote !== undefined
+            ? ` ${session.paths.globalNote}`
+            : ''),
       ),
   })
   notifyOnce(ctx, result.message, result.ok ? 'info' : 'warning')

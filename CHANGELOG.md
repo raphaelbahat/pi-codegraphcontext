@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.2...v0.9.3) (2026-10-10)
+
+
+### Bug Fixes
+
+* /cgc config saves create the missing target file, and long target paths stay readable ([758715d](https://github.com/raphaelbahat/pi-codegraphcontext/commit/758715da1eb0175d3f794cf9ef5f65ae68e24fdc))
+
 ## [0.9.2](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.1...v0.9.2) (2026-10-10)
 
 

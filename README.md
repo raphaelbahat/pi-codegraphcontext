@@ -242,7 +242,7 @@ export CGC_ALLOWED_ROOTS="$PWD"
 
 ```sh
 bun install         # no git hooks are installed automatically — see below
-bun test            # ~990 tests across 32 files
+bun test            # run the test suite
 bun run typecheck   # tsc --noEmit
 bun run check       # formatter + linter + organize imports — the gate CI runs
 ```

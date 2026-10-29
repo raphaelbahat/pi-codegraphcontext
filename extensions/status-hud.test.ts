@@ -15,6 +15,7 @@ import {
   type FreshnessHudStore,
   type FreshnessHudSummary,
   freshnessMarkerFor,
+  hudOwnsWarningSurface,
   type NoticeSeverity,
   STATUS_KEY,
   StatusHud,
@@ -1069,6 +1070,32 @@ describe('WarningSet (per-session dedup)', () => {
     expect(set.surfaced()).toEqual([])
     expect(set.shouldSurface('unindexed')).toBe(true)
     expect(set.shouldSurface('cgc-missing')).toBe(true)
+  })
+})
+
+describe('hudOwnsWarningSurface (design D4 surface ownership)', () => {
+  it('claims the warning surface for TUI only', () => {
+    // The single source of truth both the HUD and the gate consult. `tui` is
+    // the ONLY mode where the display module activates, so it is the only mode
+    // where the gate must stand down and let the HUD speak.
+    expect(hudOwnsWarningSurface('tui')).toBe(true)
+    for (const mode of ['rpc', 'json', 'print']) {
+      expect(hudOwnsWarningSurface(mode)).toBe(false)
+    }
+  })
+
+  it('treats a missing or malformed mode as non-TUI (headless-safe default)', () => {
+    // A host that omits `mode` is not a TUI session: returning true here would
+    // suppress the gate's notice in a session where the HUD is also inert,
+    // silently dropping the user's only warning path.
+    expect(hudOwnsWarningSurface(undefined)).toBe(false)
+    expect(hudOwnsWarningSurface(null)).toBe(false)
+    expect(hudOwnsWarningSurface('')).toBe(false)
+    expect(hudOwnsWarningSurface(42)).toBe(false)
+    expect(hudOwnsWarningSurface({ mode: 'tui' })).toBe(false)
+    // Exact match only — a near-miss string must not claim ownership.
+    expect(hudOwnsWarningSurface('TUI')).toBe(false)
+    expect(hudOwnsWarningSurface('tui ')).toBe(false)
   })
 })
 

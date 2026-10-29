@@ -395,6 +395,63 @@ describe('LifecycleGate state routing (task 3.2)', () => {
     expect(runner.calls.filter((c) => c.args[0] === 'index')).toEqual([])
   })
 
+  // The duplicate-warning fix: design D4 makes the status HUD the owner of the
+  // user-facing one-time warnings in a TUI session, so the gate must stand
+  // down at the forward or the user sees the same message twice. The state
+  // record and the one-time guarantee are NOT part of the suppression.
+  it('suppresses the unavailable forward in a TUI session (the HUD owns the warning)', async () => {
+    const { gate, runner, handlers } = makeRegisteredGate()
+    runner.results.set(
+      '--version',
+      okResult(['--version'], { ok: false, code: 'UNAVAILABLE', message: 'cgc not found' }),
+    )
+    const cwd = makeWorkspace(false)
+    const notifyCalls: string[] = []
+    const sessionStart = handlers.get('session_start') as (event: unknown, ctx: unknown) => unknown
+
+    sessionStart(
+      { type: 'session_start' },
+      { cwd, mode: 'tui', ui: { notify: (text: string) => notifyCalls.push(text) } },
+    )
+    await gate.whenEvaluated(cwd)
+
+    // Not forwarded anywhere: neither the session's `ui.notify` nor the
+    // gate-level notice log carry the message — the HUD renders it instead.
+    expect(notifyCalls).toEqual([])
+    expect(gate.notices()).toEqual([])
+    // ...but the state is still exposed (task 3.1) and the one-time mark was
+    // consumed, so the HUD's `warningInputFor` derives its detail from it.
+    expect(gate.snapshot(cwd)?.state).toBe('unavailable')
+    expect(gate.snapshot(cwd)?.lastAction?.kind).toBe('unavailable-notice')
+    expect(gate.snapshot(cwd)?.lastAction?.detail).toContain('cgc not found')
+  })
+
+  it('still forwards the unavailable notice outside TUI (the gate is the only surface)', async () => {
+    // Every non-TUI mode deactivates the HUD entirely (design D4), so the
+    // gate's notice is the user's sole warning path and must not be dropped.
+    for (const mode of [undefined, 'rpc', 'json', 'print']) {
+      const { gate, runner, handlers } = makeRegisteredGate()
+      runner.results.set(
+        '--version',
+        okResult(['--version'], { ok: false, code: 'UNAVAILABLE', message: 'cgc not found' }),
+      )
+      const cwd = makeWorkspace(false)
+      const notifyCalls: string[] = []
+      const sessionStart = handlers.get('session_start') as (event: unknown, ctx: unknown) => unknown
+
+      sessionStart(
+        { type: 'session_start' },
+        { cwd, ...(mode === undefined ? {} : { mode }), ui: { notify: (t: string) => notifyCalls.push(t) } },
+      )
+      await gate.whenEvaluated(cwd)
+
+      expect(notifyCalls).toHaveLength(1)
+      expect(notifyCalls[0]).toContain('unavailable')
+      expect(gate.notices()).toHaveLength(1)
+      expect(gate.snapshot(cwd)?.lastAction?.kind).toBe('unavailable-notice')
+    }
+  })
+
   it('routes unindexed (autoCreate off) to the one-time notice without indexing', async () => {
     const runner = new GateMockRunner()
     runner.results.set('--version', versionResult())

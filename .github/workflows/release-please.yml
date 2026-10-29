@@ -26,8 +26,8 @@ jobs:
           manifest-file: .release-please-manifest.json
 
       # Fully automated releases: merge the Release PR immediately. Publishing
-      # is handled by release-publish.yml (workflow_run escape hatch: pushes
-      # made with GITHUB_TOKEN do not trigger workflows).
+      # is handed to release-publish.yml by the repository_dispatch below —
+      # pushes made with GITHUB_TOKEN do not trigger workflows.
       - name: Auto-merge the Release PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,10 +52,28 @@ jobs:
       # The merge push was made with GITHUB_TOKEN, which does not trigger
       # workflows — re-run the action here (it is idempotent) so the tag +
       # GitHub Release are created immediately after the Release PR merges.
-      # The release event then fires release-publish.yml for npm.
       - id: release2
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # Hand off to the npm publish ONLY when this run actually created a
+      # release. This replaces the previous `workflow_run` handoff, which fired
+      # on every Release Please completion — and this workflow runs on every
+      # push to main — so the publish job re-ran for a version that was already
+      # released and the registry answered 409.
+      #
+      # GITHUB_TOKEN-created events do not start workflows, except
+      # workflow_dispatch and repository_dispatch, so a repository_dispatch is
+      # the way to trigger release-publish.yml from here. `releases_created`
+      # is the action's own signal ("true if any release was created"); both
+      # invocations are checked because either can be the one that ships.
+      - name: Dispatch the npm publish for the new release
+        if: >-
+          steps.release.outputs.releases_created == 'true' ||
+          steps.release2.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api "repos/$GITHUB_REPOSITORY/dispatches" -f event_type=npm-publish
 

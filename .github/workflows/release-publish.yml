@@ -7,21 +7,22 @@ name: Release Publish
 # while release-publish.yml shipped 0.3.1/0.4.0/0.5.0 fine).
 #
 # Paths:
-#  - workflow_run (Release Please completed): fires for GITHUB_TOKEN-created
-#    events too, so bot-created releases publish automatically. The tag is
-#    resolved as the latest published release (the one the post-merge
-#    invocation just created).
+#  - repository_dispatch (npm-publish): fired by release-please.yml ONLY when
+#    that run actually created a release. GITHUB_TOKEN-created events do not
+#    start workflows — repository_dispatch and workflow_dispatch are the two
+#    exceptions — so this is the bot path. It replaces the old `workflow_run`
+#    trigger, which fired on every Release Please completion (i.e. every push
+#    to main) and re-ran this job for a version that was already released.
 #  - release: released: a manually-created release.
 #  - workflow_dispatch: manual (re-)publish of an existing tag.
-# An already-published guard skips no-op runs instead of failing on
-# EPUBLISHCONFLICT.
+# An already-published guard keeps manual re-runs idempotent instead of
+# failing on EPUBLISHCONFLICT.
 
 on:
   release:
     types: [released]
-  workflow_run:
-    workflows: [Release Please]
-    types: [completed]
+  repository_dispatch:
+    types: [npm-publish]
   workflow_dispatch:
     inputs:
       tag:
@@ -41,8 +42,8 @@ jobs:
   publish:
     if: >-
       github.event_name == 'release' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      github.event_name == 'repository_dispatch' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - id: tag

@@ -38,6 +38,21 @@ language = "system"
 types = ["ts"]
 pass_filenames = true
 
+# CI parity backstop. The pre-commit biome hook is fast and per-file; this one
+# runs the exact gate CI enforces (`bun run check` = `biome check .`, i.e.
+# formatter + linter + organizeImports over the whole repo) so a commit that
+# bypassed the pre-commit stage cannot reach a red CI. `pass_filenames` is off
+# on purpose: `biome check .` is repo-wide, and passing a file list would
+# silently narrow it back to a subset.
+[[repos.hooks]]
+id = "biome-check-prepush"
+name = "biome check (repo-wide, CI parity)"
+entry = "bun run check"
+language = "system"
+pass_filenames = false
+always_run = true
+stages = ["pre-push"]
+
 [[repos.hooks]]
 id = "commitlint"
 name = "commitlint (conventional commits)"

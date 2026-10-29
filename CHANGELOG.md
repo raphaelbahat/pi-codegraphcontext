@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.6](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.5...v0.9.6) (2026-10-29)
+
+
+### Bug Fixes
+
+* **gate:** suppress duplicate unavailable notice when HUD owns the warning surface ([415c889](https://github.com/raphaelbahat/pi-codegraphcontext/commit/415c8898943c1f5178ca6a47f65c835b94a3108e))
+
 ## [0.9.5](https://github.com/raphaelbahat/pi-codegraphcontext/compare/v0.9.4...v0.9.5) (2026-10-10)
 
 

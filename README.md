@@ -241,9 +241,27 @@ export CGC_ALLOWED_ROOTS="$PWD"
 ## Development
 
 ```sh
-bun install
-bun test          # ~935 tests across 32 files
-bunx tsc --noEmit # type check
+bun install         # no git hooks are installed automatically — see below
+bun test            # ~990 tests across 32 files
+bun run typecheck   # tsc --noEmit
+bun run check       # formatter + linter + organize imports — the gate CI runs
 ```
+
+`bun run check` is the gate CI enforces, and `bun run lint` is an alias for it.
+`bun run format` formats only; `bun run check:fix` applies every safe fix.
+
+### Git hooks
+
+Hooks are **not** installed automatically — Git hooks live in `.git/hooks/`, which is not
+tracked, so a fresh clone has to arm them once. Install
+[prek](https://github.com/j178/prek) so it is on your `PATH`, then run:
+
+```sh
+bun run hooks:install   # prek install -t pre-commit -t pre-push
+```
+
+- `pre-commit` formats and lints the files you changed (fast).
+- `pre-push` runs the repo-wide `bun run check` — the same gate as CI — so a commit that
+  bypassed the pre-commit stage cannot reach a red build.
 
 The extension is fully covered by the per-capability specs under `openspec/specs/` and the archived change history under `openspec/changes/archive/`.

@@ -21,7 +21,8 @@
     "check:fix": "biome check --write .",
     "format": "biome format --write .",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "bun test",
+    "hooks:install": "prek install -t pre-commit -t pre-push"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

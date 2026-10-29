@@ -437,11 +437,18 @@ describe('LifecycleGate state routing (task 3.2)', () => {
       )
       const cwd = makeWorkspace(false)
       const notifyCalls: string[] = []
-      const sessionStart = handlers.get('session_start') as (event: unknown, ctx: unknown) => unknown
+      const sessionStart = handlers.get('session_start') as (
+        event: unknown,
+        ctx: unknown,
+      ) => unknown
 
       sessionStart(
         { type: 'session_start' },
-        { cwd, ...(mode === undefined ? {} : { mode }), ui: { notify: (t: string) => notifyCalls.push(t) } },
+        {
+          cwd,
+          ...(mode === undefined ? {} : { mode }),
+          ui: { notify: (t: string) => notifyCalls.push(t) },
+        },
       )
       await gate.whenEvaluated(cwd)
 

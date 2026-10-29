@@ -58,6 +58,7 @@ import type { ExtensionConfig } from './config'
 import { type CorruptNotice, CorruptPath } from './corrupt'
 import { DriftPath } from './drift'
 import { type LifecycleSnapshot, LifecycleStateStore } from './lifecycle-state'
+import { hudOwnsWarningSurface } from './status-hud'
 import type { CgcRunner, RunnerContextResolver } from './runner'
 import { type UnindexedNotice, UnindexedPath } from './unindexed'
 import { type WorkspaceDetector, WorkspaceDetector as WorkspaceDetectorImpl } from './workspace'
@@ -109,6 +110,12 @@ export interface GateExtensionApi {
 interface GateSessionContext {
   cwd?: unknown
   ui?: unknown
+  /**
+   * The Pi session mode (`'tui'`, `'rpc'`, `'print'`, …). Read so the gate can
+   * tell whether the status HUD owns the user-facing warning surface (design
+   * D4) before forwarding a notice the HUD would render itself.
+   */
+  mode?: unknown
 }
 
 interface GateUiContext {
@@ -243,6 +250,14 @@ interface GateSession {
   contextResolverAttached: boolean
   /** The `ui.notify` captured from the most recent session-start context. */
   activeNotify: GateNoticeSink | undefined
+  /**
+   * The Pi session mode captured from the most recent session-start context
+   * (`'tui'`, `'rpc'`, `'print'`, …) — undefined until a hook supplies one.
+   * Design D4 surface ownership is decided from this: in a TUI session the
+   * status HUD renders the user-facing one-time warnings, so the gate must not
+   * forward its own duplicate.
+   */
+  activeMode: unknown
   /** In-flight evaluations, keyed by workspace cwd. */
   activeEvaluations: Map<string, Promise<GateEvaluationOutcome>>
   /** Last evaluation outcome per workspace (for `whenEvaluated`). */
@@ -511,6 +526,10 @@ export class LifecycleGate {
         typeof ui.notify === 'function'
           ? (ui.notify as (text: string, type: 'info' | 'warning' | 'error') => void)
           : undefined
+      // Design D4 surface ownership: capture the session mode so route() can
+      // tell whether the status HUD owns the user-facing warning surface.
+      // A host that omits the mode leaves it undefined (not a TUI session).
+      session.activeMode = typeof context.mode === 'string' ? context.mode : undefined
 
       // The Pi session working directory is the source of truth (never
       // process.cwd(); the detector's fallback is only for hosts that omit a
@@ -715,11 +734,20 @@ export class LifecycleGate {
         // the session proceeds (spec: "cgc binary is missing").
         if (!session.unavailableNotified.has(cwd)) {
           session.unavailableNotified.add(cwd)
-          this.forwardNotice(
-            session,
-            'warning',
-            buildUnavailableNotice(cwd, classification.probe.message),
-          )
+          // Design D4: in a TUI session the status HUD owns the user-facing
+          // one-time warning (its warning carries the same guidance plus the
+          // continuation line). Forwarding here too is what printed the
+          // message twice, so the duplicate is suppressed at the forward and
+          // the HUD stands as sole owner. In every other mode there is no HUD
+          // surface (the display module is TUI-only), so this notice is the
+          // user's only path and is forwarded unchanged.
+          if (!hudOwnsWarningSurface(session.activeMode)) {
+            this.forwardNotice(
+              session,
+              'warning',
+              buildUnavailableNotice(cwd, classification.probe.message),
+            )
+          }
           try {
             session.store.recordAction({
               kind: 'unavailable-notice',
@@ -1160,6 +1188,7 @@ export class LifecycleGate {
       prunedNotified: new Set(),
       contextResolverAttached: false,
       activeNotify: undefined,
+      activeMode: undefined,
       activeEvaluations: new Map(),
       lastOutcomes: new Map(),
       lastClassifications: new Map(),

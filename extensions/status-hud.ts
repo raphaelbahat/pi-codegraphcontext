@@ -308,6 +308,25 @@ export class WarningSet {
 }
 
 /**
+ * The single definition of design D4's surface-ownership rule: in a TUI
+ * session the HUD owns the user-facing one-time warnings; in every other mode
+ * the display module is deactivated, so the change-1 lifecycle one-time
+ * notices ride instead.
+ *
+ * The gate asks THIS predicate before forwarding a notice the HUD can render
+ * itself, so the rule is never restated (and cannot drift) in two modules:
+ * true means "the HUD will surface it — do not forward", false means "forward,
+ * nothing else will".
+ *
+ * A missing mode is NOT a TUI session (the same headless-safe default the HUD
+ * applies to itself), so an absent stage falls back to the gate's notice and
+ * the user's only warning path is never silently dropped.
+ */
+export function hudOwnsWarningSurface(mode: unknown): boolean {
+  return mode === 'tui'
+}
+
+/**
  * The narrow store surface the HUD consumes (the real
  * {@link LifecycleStateStore} satisfies it structurally; tests may pass a
  * stand-in). Subscribe receives every recorded snapshot for every workspace
@@ -724,7 +743,7 @@ export class StatusHud {
     try {
       if (lifecycle === null) return
       // Design D4: the notice surface is TUI-only; a missing mode is not TUI.
-      if (this.activeMode !== 'tui') return
+      if (!hudOwnsWarningSurface(this.activeMode)) return
       const notify = this.notify
       if (typeof notify !== 'function') return
       const input = warningInputFor(lifecycle)
